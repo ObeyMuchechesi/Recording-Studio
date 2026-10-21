@@ -101,10 +101,10 @@ function TrackStrip({ track, selected, armed, onSelect, onArm, onChange, onManag
         onChange={(e) => onChange({ ...track, gain: parseFloat(e.target.value) })}
         className="h-10 w-4" style={{ writingMode: "vertical-lr", direction: "rtl" }} />
       <div className="text-[9px] text-dim font-mono">{((track.gain ?? 1) * 100).toFixed(0)}%</div>
-      <button type="button" disabled={!track.takes?.length}
+      <button type="button"
         onClick={(e) => { e.stopPropagation(); onManageTakes(track.id); }}
-        className="w-full truncate text-[9px] text-dim underline decoration-dotted underline-offset-2 hover:text-accent disabled:cursor-default disabled:no-underline disabled:opacity-60">
-        Takes · {track.takes?.length || 0} · Manage
+        className="w-full truncate rounded border border-accent/40 px-1 py-0.5 text-[9px] font-semibold text-accent hover:bg-[#14342a]">
+        Manage takes · {track.takes?.length || 0}
       </button>
       <input type="range" min={-1} max={1} step={0.01} value={track.pan ?? 0}
         aria-label={`${track.name} pan`} onClick={(e) => e.stopPropagation()}
@@ -119,6 +119,7 @@ export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, on
   const [vocalName, setVocalName] = useState("");
   const [managingTrackId, setManagingTrackId] = useState(null);
   const armedTrack = tracks.find((track) => track.id === armedId);
+  const selectedTrack = tracks.find((track) => track.id === selectedId) || tracks[0];
   const managingTrack = tracks.find((track) => track.id === managingTrackId);
 
   const addVocal = (event) => {
@@ -136,6 +137,11 @@ export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, on
         <div className="text-[9px] font-semibold tracking-[0.2em] text-dim">VOCAL TRACKS</div>
         <div className="flex min-w-0 items-center gap-3">
           <div className="truncate text-[10px] text-dim">Recording target: <span className="text-rec">{armedTrack?.name || "No track armed"}</span></div>
+          <button type="button" disabled={!selectedTrack} onClick={() => selectedTrack && setManagingTrackId(selectedTrack.id)}
+            title={`Manage takes for ${selectedTrack?.name || "selected vocal"}`}
+            className="shrink-0 rounded border border-accent px-2 py-0.5 text-[10px] font-semibold text-accent hover:bg-[#14342a] disabled:opacity-40">
+            Manage Takes · {selectedTrack?.takes?.length || 0}
+          </button>
           <button onClick={() => setShowAddDialog(true)}
             className="shrink-0 rounded border border-accent/50 px-2 py-0.5 text-[10px] font-semibold text-accent hover:bg-[#14342a]">
             + Add Vocal
