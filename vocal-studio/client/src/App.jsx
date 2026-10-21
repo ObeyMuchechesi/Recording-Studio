@@ -30,6 +30,7 @@ const DEFAULT_MASTER = {
 };
 
 function makeTake(offset, data, sampleRate, name) {
+  const id = globalThis.crypto?.randomUUID?.() || `take-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const peaks = new Float32Array(Math.ceil(data.length / 64) * 2);
   for (let i = 0; i < data.length; i += 64) {
     let mn = 1, mx = -1;
@@ -42,7 +43,7 @@ function makeTake(offset, data, sampleRate, name) {
     peaks[b * 2] = mn;
     peaks[b * 2 + 1] = mx;
   }
-  return { name, offset, sampleRate, data, gain: 1, mute: false, peaks,
+  return { id, name, offset, sampleRate, data, gain: 1, mute: false, peaks,
            duration: data.length / sampleRate };
 }
 
@@ -371,6 +372,20 @@ export default function App() {
     setSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === updated.id ? updated : track) }));
   };
 
+  const deleteTake = (trackId, takeId) => {
+    if (recording) return alert("Stop recording before deleting a take");
+    if (playing) {
+      engineRef?.stopPlay();
+      setPlaying(false);
+    }
+    setSession((current) => current ? ({
+      ...current,
+      tracks: current.tracks.map((track) => track.id === trackId
+        ? { ...track, takes: track.takes.filter((take) => take.id !== takeId) }
+        : track),
+    }) : current);
+  };
+
   const addTrack = (name) => {
     const id = globalThis.crypto?.randomUUID?.() || "t" + Date.now();
     const index = session.tracks.length;
@@ -455,6 +470,8 @@ export default function App() {
           onArm={(id) => { setSelectedTrack(id); setArmedTrackId(id); }}
           onTrackChange={changeTrack}
           onAddTrack={addTrack}
+          onDeleteTake={deleteTake}
+          recording={recording}
         />
 
         <MasterPanel

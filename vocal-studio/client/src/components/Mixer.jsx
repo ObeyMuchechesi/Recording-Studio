@@ -1,6 +1,56 @@
 import React, { useEffect, useState } from "react";
 
-function TrackStrip({ track, selected, armed, onSelect, onArm, onChange }) {
+function formatTime(seconds = 0) {
+  const safe = Math.max(0, Number(seconds) || 0);
+  const minutes = Math.floor(safe / 60).toString().padStart(2, "0");
+  const wholeSeconds = Math.floor(safe % 60).toString().padStart(2, "0");
+  const millis = Math.floor((safe % 1) * 1000).toString().padStart(3, "0");
+  return `${minutes}:${wholeSeconds}.${millis}`;
+}
+
+function TakeManager({ track, recording, onClose, onDelete }) {
+  if (!track) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <section role="dialog" aria-modal="true" aria-labelledby="take-manager-title"
+        className="w-full max-w-lg rounded-xl border border-line bg-panel p-5 shadow-2xl">
+        <div className="mb-1 flex items-center justify-between gap-3">
+          <h2 id="take-manager-title" className="truncate text-sm font-semibold text-ink">Takes · {track.name}</h2>
+          <button type="button" onClick={onClose} aria-label="Close takes" className="rounded border border-line px-2 py-1 text-xs text-dim">Close</button>
+        </div>
+        <p className="mb-4 text-xs text-dim">Remove an unwanted recording from this vocal track. The change will autosave with the project.</p>
+
+        {track.takes.length ? (
+          <div className="max-h-72 space-y-2 overflow-y-auto">
+            {track.takes.map((take, index) => (
+              <div key={take.id} className="flex items-center gap-3 rounded border border-line bg-panel2 px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium text-ink">{take.name || `Take ${index + 1}`}</div>
+                  <div className="font-mono text-[10px] text-dim">Start {formatTime(take.offset)} · Length {formatTime(take.duration)}</div>
+                </div>
+                <button type="button" disabled={recording}
+                  onClick={() => {
+                    const label = take.name || `Take ${index + 1}`;
+                    if (window.confirm(`Delete “${label}” from ${track.name}? This cannot be undone.`)) onDelete(track.id, take.id);
+                  }}
+                  title={recording ? "Stop recording before deleting a take" : `Delete ${take.name || `Take ${index + 1}`}`}
+                  className="shrink-0 rounded border border-rec/50 px-2 py-1 text-[10px] font-semibold text-rec hover:bg-[#34151b] disabled:cursor-not-allowed disabled:opacity-40">
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-line px-3 py-6 text-center text-xs text-dim">No recordings on this track yet.</div>
+        )}
+        {recording && <p className="mt-3 text-[10px] text-warn">Stop recording before removing a take.</p>}
+      </section>
+    </div>
+  );
+}
+
+function TrackStrip({ track, selected, armed, onSelect, onArm, onChange, onManageTakes }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(track.name || "");
 
@@ -50,7 +100,12 @@ function TrackStrip({ track, selected, armed, onSelect, onArm, onChange }) {
         aria-label={`${track.name} volume`} onClick={(e) => e.stopPropagation()}
         onChange={(e) => onChange({ ...track, gain: parseFloat(e.target.value) })}
         className="h-10 w-4" style={{ writingMode: "vertical-lr", direction: "rtl" }} />
-      <div className="text-[9px] text-dim font-mono">{((track.gain ?? 1) * 100).toFixed(0)}% · {(track.takes || []).length} takes</div>
+      <div className="text-[9px] text-dim font-mono">{((track.gain ?? 1) * 100).toFixed(0)}%</div>
+      <button type="button" disabled={!track.takes?.length}
+        onClick={(e) => { e.stopPropagation(); onManageTakes(track.id); }}
+        className="w-full truncate text-[9px] text-dim underline decoration-dotted underline-offset-2 hover:text-accent disabled:cursor-default disabled:no-underline disabled:opacity-60">
+        Takes · {track.takes?.length || 0} · Manage
+      </button>
       <input type="range" min={-1} max={1} step={0.01} value={track.pan ?? 0}
         aria-label={`${track.name} pan`} onClick={(e) => e.stopPropagation()}
         onChange={(e) => onChange({ ...track, pan: parseFloat(e.target.value) })} className="w-full" />
@@ -59,10 +114,12 @@ function TrackStrip({ track, selected, armed, onSelect, onArm, onChange }) {
   );
 }
 
-export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, onTrackChange, onAddTrack }) {
+export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, onTrackChange, onAddTrack, onDeleteTake, recording }) {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [vocalName, setVocalName] = useState("");
+  const [managingTrackId, setManagingTrackId] = useState(null);
   const armedTrack = tracks.find((track) => track.id === armedId);
+  const managingTrack = tracks.find((track) => track.id === managingTrackId);
 
   const addVocal = (event) => {
     event.preventDefault();
@@ -90,7 +147,7 @@ export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, on
         {tracks.map((track) => (
           <TrackStrip key={track.id} track={track} selected={track.id === selectedId} armed={track.id === armedId}
             onSelect={() => onSelect(track.id)} onArm={() => onArm(track.id)}
-            onChange={(next) => onTrackChange(next)} />
+            onChange={(next) => onTrackChange(next)} onManageTakes={setManagingTrackId} />
         ))}
       </div>
 
@@ -111,6 +168,9 @@ export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, on
           </form>
         </div>
       )}
+
+      <TakeManager track={managingTrack} recording={recording} onClose={() => setManagingTrackId(null)}
+        onDelete={onDeleteTake} />
     </div>
   );
 }

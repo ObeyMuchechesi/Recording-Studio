@@ -39,7 +39,7 @@ The Vercel app serves the built client and Express API on the same domain. Confi
 
 ## Features
 
-- Named vocal tracks for separate singers/parts, each with its own record arm and takes in one shared project
+- Named vocal tracks for separate singers/parts, each with its own record arm and takes in one shared project; unwanted takes can be removed individually
 - Per-track rename, input-device selection, live input metering, optional headphone monitoring, and autosaved project settings/mix
 - Timeline playback, latency calibration, count-in, and metronome
 - Per-track gate, high-pass filter, de-esser, EQ, compressor, saturation, and reverb send
