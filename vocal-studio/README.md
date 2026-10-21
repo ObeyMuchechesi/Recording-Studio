@@ -28,6 +28,15 @@ A browser-based multitrack vocal recording, mixing, and mastering studio.
 
 5. Open http://localhost:5173, register, select Connect Input, and grant microphone access. Calibrate latency, set the tempo and count-in, then record each part. Use the mixer and master controls to shape the session and export a 24-bit WAV mixdown.
 
+## Deploy to Vercel
+
+Import the GitHub repository and set the project Root Directory to vocal-studio. The build command is configured in vercel.json. Add these production environment variables in Vercel:
+
+- MONGODB_URI: your MongoDB Atlas connection string
+- JWT_SECRET: a long, randomly generated secret
+
+The Vercel app serves the built client and Express API on the same domain. Configure the MongoDB Atlas network access list so the Vercel function can reach the cluster.
+
 ## Features
 
 - Multiple vocal tracks with takes, timeline playback, and recording
@@ -40,4 +49,4 @@ A browser-based multitrack vocal recording, mixing, and mastering studio.
 
 ## Notes
 
-Audio capture and microphone access require a secure browser context (localhost is supported). Headphones are recommended. MongoDB Atlas credentials and the JWT secret belong in environment variables; never commit .env.
+Audio capture and microphone access require a secure browser context (localhost is supported). Headphones are recommended. The current session API stores WAV data in MongoDB documents; Vercel Function requests have a 4.5 MB payload limit, so longer takes or sessions with many takes need direct object storage before they can be saved reliably.

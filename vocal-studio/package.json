@@ -4,7 +4,8 @@
   "type": "commonjs",
   "scripts": {
     "dev": "node --watch server/index.js",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "build": "npm --prefix client ci && npm --prefix client run build"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
