@@ -1,1 +1,4 @@
-module.exports = require("./server/app");
+const express = require("express");
+const app = require("./server/app");
+
+module.exports = app;
