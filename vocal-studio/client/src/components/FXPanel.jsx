@@ -22,13 +22,18 @@ function Toggle({ label, value, onChange }) {
   );
 }
 
-const TABS = ["gate", "eq", "deEsser", "comp", "sat", "reverb"];
+const TABS = ["gate", "eq", "deEsser", "comp", "sat", "reverb", "tune", "automation", "delay"];
 
-export default function FXPanel({ track, onChange }) {
+export default function FXPanel({ track, onChange, playhead = 0, sampleRate = 48000, onPitchChange, onAutomationAdd, onAutomationChange, onAutomationDelete, onLatencyChange }) {
   const [tab, setTab] = useState("comp");
+  const [automationLane, setAutomationLane] = useState("volume");
   if (!track) return null;
   const fx = track.fx || {};
+  const pitch = track.pitch || { enabled: false, key: "C", scale: "major", amount: 0.85, speedMs: 70 };
+  const points = track.automation?.[automationLane] || [];
   const update = (k, v) => onChange({ ...fx, [k]: { ...(fx[k] || {}), ...v } });
+  const updatePitch = (v) => onPitchChange?.({ ...pitch, ...v });
+  const timeLabel = `${String(Math.floor(playhead / 60)).padStart(2, "0")}:${String(Math.floor(playhead % 60)).padStart(2, "0")}`;
 
   return (
     <div className="p-3 flex flex-col gap-2">
@@ -99,6 +104,71 @@ export default function FXPanel({ track, onChange }) {
           <Slider label="Mix"   value={fx.reverb?.mix ?? 0}   min={0} max={1} step={0.01} onChange={(v) => update("reverb", { mix: v })} />
           <Slider label="Decay" value={fx.reverb?.decay ?? 2.5} min={0.3} max={8} step={0.1} unit=" s" onChange={(v) => update("reverb", { decay: v })} />
           <Slider label="Size"  value={fx.reverb?.size ?? 1}  min={0.3} max={2} step={0.05} onChange={(v) => update("reverb", { size: v })} />
+        </div>
+      )}
+
+      {tab === "tune" && (
+        <div className="flex flex-col gap-2">
+          <Toggle label="Pitch correction" value={pitch.enabled} onChange={(v) => updatePitch({ enabled: v })} />
+          <label className="flex items-center justify-between gap-2 text-xs text-dim">Key
+            <select value={pitch.key || "C"} onChange={(e) => updatePitch({ key: e.target.value })}>
+              {["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"].map((note) => <option key={note} value={note}>{note}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center justify-between gap-2 text-xs text-dim">Scale
+            <select value={pitch.scale || "major"} onChange={(e) => updatePitch({ scale: e.target.value })}>
+              <option value="major">Major</option><option value="minor">Minor</option><option value="chromatic">Chromatic</option>
+            </select>
+          </label>
+          <Slider label="Correction amount" value={(pitch.amount ?? 0.85) * 100} min={0} max={100} step={1} unit="%" onChange={(v) => updatePitch({ amount: v / 100 })} />
+          <Slider label="Retune speed" value={pitch.speedMs ?? 70} min={5} max={200} step={1} unit=" ms" onChange={(v) => updatePitch({ speedMs: v })} />
+          <p className="text-[10px] leading-relaxed text-dim">Scale-aware, non-destructive tuning for the selected vocalist. It is applied during playback and mixdown; correction analyzes the take before playback.</p>
+        </div>
+      )}
+
+      {tab === "automation" && (
+        <div className="flex flex-col gap-2">
+          <label className="flex items-center justify-between gap-2 text-xs text-dim">Lane
+            <select value={automationLane} onChange={(e) => setAutomationLane(e.target.value)}>
+              <option value="volume">Volume</option><option value="pan">Pan</option><option value="send">Reverb send</option>
+            </select>
+          </label>
+          <button onClick={() => onAutomationAdd?.(automationLane)} className="rounded border border-accent/50 px-2 py-1 text-xs text-accent hover:bg-[#14342a]">
+            Add point at {timeLabel}
+          </button>
+          <div className="max-h-48 space-y-2 overflow-y-auto">
+            {points.length ? points.map((point, index) => {
+              const bounds = automationLane === "volume" ? [0, 2, 0.01] : automationLane === "pan" ? [-1, 1, 0.01] : [0, 1, 0.01];
+              return <div key={`${point.time}-${index}`} className="grid grid-cols-[1fr_1.1fr_auto] items-center gap-1 rounded border border-line p-1">
+                <label className="text-[9px] text-dim">Time
+                  <input type="number" min="0" step="0.01" value={Number(point.time).toFixed(2)}
+                    onChange={(e) => onAutomationChange?.(automationLane, index, { time: Math.max(0, Number(e.target.value) || 0) })} className="mt-0.5 w-full text-[10px]" />
+                </label>
+                <label className="text-[9px] text-dim">Value
+                  <input type="number" min={bounds[0]} max={bounds[1]} step={bounds[2]} value={Number(point.value).toFixed(2)}
+                    onChange={(e) => onAutomationChange?.(automationLane, index, { value: Math.max(bounds[0], Math.min(bounds[1], Number(e.target.value) || 0)) })} className="mt-0.5 w-full text-[10px]" />
+                </label>
+                <button type="button" aria-label={`Delete ${automationLane} automation point`} onClick={() => onAutomationDelete?.(automationLane, index)}
+                  className="mt-3 rounded border border-line px-1 text-[10px] text-rec">×</button>
+              </div>;
+            }) : <div className="py-2 text-[10px] text-dim">No points on this lane yet.</div>}
+          </div>
+          <p className="text-[10px] leading-relaxed text-dim">Linear automation runs in playback and exported mixdowns. Times are measured in session seconds.</p>
+        </div>
+      )}
+
+      {tab === "delay" && (
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-1 text-xs text-dim">Reported insert latency
+            <div className="flex items-center gap-2">
+              <input type="number" min="0" max="96000" step="1" value={track.pluginLatencySamples || 0}
+                onChange={(e) => onLatencyChange?.(Math.max(0, Math.min(96000, Math.round(Number(e.target.value) || 0))))}
+                className="w-full" />
+              <span className="shrink-0 font-mono text-[10px]">samples</span>
+            </div>
+          </label>
+          <div className="text-[10px] font-mono text-dim">≈ {((track.pluginLatencySamples || 0) / sampleRate * 1000).toFixed(2)} ms at {sampleRate} Hz</div>
+          <p className="text-[10px] leading-relaxed text-dim">Playback and export delay the lower-latency tracks to match the slowest reported path. Built-in browser effects report zero; enter latency reported by any externally processed take.</p>
         </div>
       )}
     </div>

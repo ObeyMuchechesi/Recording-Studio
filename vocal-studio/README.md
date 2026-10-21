@@ -44,13 +44,17 @@ The Vercel app serves the built client and Express API on the same domain. Confi
 - Named vocal tracks for separate singers/parts, each with its own record arm and takes in one shared project; unwanted takes can be removed individually
 - Per-track rename, input-device selection, live input metering, hardware-direct or software monitoring modes, and autosaved project settings/mix
 - Non-destructive phrase comping with source takes, short region fades, and 50-step Undo/Redo history
+- Scale-aware, non-destructive vocal pitch correction with key, scale, amount, and retune-speed controls
+- Track automation for volume, pan, and reverb send; points are stored with each project and play in mixdown
+- Plugin delay compensation from reported per-track sample latency, applied to playback and mixdown alignment
 - Timeline playback, latency calibration, count-in, and metronome
 - Per-track gate, high-pass filter, de-esser, EQ, compressor, saturation, and reverb send
 - Mixer controls for level, pan, mute, and solo
-- Master EQ, glue compression, limiter, LUFS and true-peak metering
-- Pitch tuner and offline 24-bit WAV mixdown
+- Master EQ, glue compression, limiter, momentary/short-term/integrated loudness, sample peak, and interpolated peak estimates
+- Live pitch tuner and offline 24-bit WAV mixdown
+- Chunked WAV storage in MongoDB for recordings up to 2 GB per take, avoiding the 16 MB document and per-request payload limits; decoded audio still uses browser memory, so practical editing limits depend on the device
 - JWT authentication and MongoDB session persistence
 
 ## Notes
 
-Audio capture and microphone access require a secure browser context (localhost is supported). Headphones are recommended. The current session API stores WAV data in MongoDB documents; Vercel Function requests have a 4.5 MB payload limit, so longer takes or sessions with many takes need direct object storage before they can be saved reliably.
+Audio capture and microphone access require a secure browser context (localhost is supported). Headphones are recommended. Loudness uses a simplified browser-side weighting and absolute gate; interpolated peak is an estimate. Plugin delay compensation uses latency values reported manually for processed takes; built-in browser effects report zero latency.

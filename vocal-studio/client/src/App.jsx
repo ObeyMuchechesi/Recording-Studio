@@ -9,7 +9,8 @@ import Tuner from "./components/Tuner.jsx";
 import { api, getToken, setToken } from "./api.js";
 import { StudioEngine } from "./audio/engine.js";
 import { renderMixdown } from "./audio/render.js";
-import { encodeWAV, download, blobToBase64, decodeWAVBase64 } from "./audio/wav.js";
+import { encodeWAV, download, decodeWAVBase64, decodeWAVArrayBuffer } from "./audio/wav.js";
+import { correctedTracks } from "./audio/pitch.js";
 
 let engineRef = null;
 
@@ -29,8 +30,7 @@ const DEFAULT_MASTER = {
   output: 1,
 };
 
-function makeTake(offset, data, sampleRate, name) {
-  const id = globalThis.crypto?.randomUUID?.() || `take-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+function buildTakePeaks(data) {
   const peaks = new Float32Array(Math.ceil(data.length / 64) * 2);
   for (let i = 0; i < data.length; i += 64) {
     let mn = 1, mx = -1;
@@ -43,6 +43,12 @@ function makeTake(offset, data, sampleRate, name) {
     peaks[b * 2] = mn;
     peaks[b * 2 + 1] = mx;
   }
+  return peaks;
+}
+
+function makeTake(offset, data, sampleRate, name) {
+  const id = globalThis.crypto?.randomUUID?.() || `take-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const peaks = buildTakePeaks(data);
   return { id, name, offset, sampleRate, data, gain: 1, mute: false, peaks,
            duration: data.length / sampleRate };
 }
@@ -105,7 +111,8 @@ function serializeTrack(track) {
     name: track.name,
     color: track.color,
     gain: track.gain, pan: track.pan, mute: track.mute, solo: track.solo,
-    fx: track.fx,
+    fx: track.fx, pitch: track.pitch, automation: track.automation,
+    pluginLatencySamples: track.pluginLatencySamples,
     regionsInitialized: true,
     regions: (track.regions || []).map((region) => ({
       regionKey: String(region.id), takeId: String(region.takeId),
@@ -117,6 +124,8 @@ function serializeTrack(track) {
       takeKey: String(take.id),
       name: take.name, offset: take.offset, sampleRate: take.sampleRate,
       gain: take.gain, mute: take.mute, wavBase64: take.wavBase64,
+      audioStorageKey: take.audioStorageKey, audioChunkCount: take.audioChunkCount,
+      audioByteLength: take.audioByteLength,
     })),
   };
 }
@@ -135,9 +144,10 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
   const [monitoringMode, setMonitoringMode] = useState("hardware");
+  const [pitchPreparing, setPitchPreparing] = useState(false);
   const [saveState, setSaveState] = useState("saved");
   const [playhead, setPlayhead] = useState(0);
-  const [lufs, setLufs] = useState({ momentary: -Infinity, shortTerm: -Infinity });
+  const [lufs, setLufs] = useState({ momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity, samplePeak: -Infinity, truePeak: -Infinity });
   const [bpm, setBpm] = useState(100);
   const [countIn, setCountIn] = useState(1);
   const [metro, setMetro] = useState(false);
@@ -269,6 +279,13 @@ export default function App() {
       id: String(t._id || t.id || `t${i}`),
       color: t.color || ["#5fd4a0","#5fa8d4","#d4a05f","#d45fa8"][i % 4],
       fx: { ...DEFAULT_FX, ...(t.fx || {}) },
+      pitch: { enabled: false, key: "C", scale: "major", amount: 0.85, speedMs: 70, ...(t.pitch || {}) },
+      automation: {
+        volume: (t.automation?.volume || []).map((point) => ({ time: Number(point.time) || 0, value: Number(point.value) || 0 })),
+        pan: (t.automation?.pan || []).map((point) => ({ time: Number(point.time) || 0, value: Number(point.value) || 0 })),
+        send: (t.automation?.send || []).map((point) => ({ time: Number(point.time) || 0, value: Number(point.value) || 0 })),
+      },
+      pluginLatencySamples: Math.max(0, Number(t.pluginLatencySamples) || 0),
       takes: (t.takes || []).map((tk, j) => ({
         ...tk,
         id: String(tk.takeKey || tk._id || tk.id || `tk${j}`),
@@ -311,6 +328,11 @@ export default function App() {
             peaks[b * 2] = mn; peaks[b * 2 + 1] = mx;
           }
           take.peaks = peaks;
+          take.duration = take.data.length / take.sampleRate;
+        } else if (take.audioStorageKey && take.audioChunkCount) {
+          const wav = await api.downloadTakeAudio(s._id, take.audioStorageKey, take.audioChunkCount);
+          take.data = await decodeWAVArrayBuffer(await wav.arrayBuffer(), engineRef?.ctx, take.sampleRate);
+          take.peaks = buildTakePeaks(take.data);
           take.duration = take.data.length / take.sampleRate;
         }
       }
@@ -364,7 +386,7 @@ export default function App() {
   const ensureEngine = useCallback(async () => {
     if (!engineRef) {
       engineRef = new StudioEngine();
-      engineRef.onLufs = (v) => setLufs({ momentary: v.momentary, shortTerm: v.shortTerm });
+      engineRef.onLufs = (v) => setLufs(v);
       await engineRef.init();
       setEngine(engineRef);
     }
@@ -409,7 +431,7 @@ export default function App() {
       if (engineRef?.playing) {
         const pos = engineRef.playStartPos + (engineRef.ctx.currentTime - engineRef.playStartCtx);
         setPlayhead(pos);
-        if (pos > sessionLengthSeconds(session) + 0.4) {
+        if (pos > sessionLengthSeconds(session) + 0.4 + (engineRef.compensationLatencySeconds || 0)) {
           engineRef.stopPlay();
           setPlaying(false);
         }
@@ -425,10 +447,13 @@ export default function App() {
 
   /* ---------- transport handlers ---------- */
   const play = async () => {
-    if (!session || playing) return;
+    if (!session || playing || pitchPreparing) return;
     const e = await ensureEngine();
-    e.playRegions(session.tracks, playhead);
-    setPlaying(true);
+    setPitchPreparing(true);
+    try {
+      e.playRegions(await correctedTracks(session.tracks), playhead);
+      setPlaying(true);
+    } finally { setPitchPreparing(false); }
   };
   const stop = () => {
     if (recording) { stopRecord(); return; }
@@ -479,8 +504,8 @@ export default function App() {
     let savedTake = take;
     try {
       const wavBlob = encodeWAV([data], sr, 24);
-      const b64 = await blobToBase64(wavBlob);
-      savedTake = { ...take, wavBase64: b64 };
+      const audio = await api.uploadTakeAudio(session._id, take.id, wavBlob);
+      savedTake = { ...take, ...audio };
     } catch (e) {
       setSaveState("error");
       alert("This take is playable for now, but its audio could not be prepared for saving: " + e.message);
@@ -526,10 +551,11 @@ export default function App() {
 
   const exportMixdown = async () => {
     if (!session) return;
-    const lengthSec = sessionLengthSeconds(session) + 1;
+    const maxLatencySamples = Math.max(0, ...session.tracks.map((track) => Number(track.pluginLatencySamples) || 0));
+    const lengthSec = sessionLengthSeconds(session) + 1 + maxLatencySamples / (engineRef?.ctx?.sampleRate || 48000);
     if (lengthSec <= 1) return alert("Nothing to export");
     const blob = await renderMixdown({
-      tracks: session.tracks,
+      tracks: await correctedTracks(session.tracks),
       masterFx: session.masterFx,
       sampleRate: engineRef?.ctx?.sampleRate || 48000,
       lengthSec,
@@ -537,8 +563,39 @@ export default function App() {
     download(blob, `mixdown-${Date.now()}.wav`);
   };
 
+  const resetLoudnessMeter = () => {
+    engineRef?.master?.resetMeter?.();
+    setLufs({ momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity, samplePeak: -Infinity, truePeak: -Infinity });
+  };
+
   const changeTrack = (updated) => {
     editSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === updated.id ? updated : track) }), `track-${updated.id}`);
+  };
+
+  const addAutomationPoint = (trackId, lane) => {
+    const track = sessionRef.current?.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const values = { volume: track.gain ?? 1, pan: track.pan ?? 0, send: track.fx?.reverb?.on ? track.fx.reverb.mix ?? 0 : 0 };
+    const points = track.automation?.[lane] || [];
+    const next = [...points.filter((point) => Math.abs(point.time - playhead) > 0.01), { time: Math.max(0, playhead), value: values[lane] }]
+      .sort((a, b) => a.time - b.time);
+    changeTrack({ ...track, automation: { ...(track.automation || {}), [lane]: next } });
+  };
+
+  const changeAutomation = (trackId, lane, index, patch) => {
+    const track = sessionRef.current?.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const points = [...(track.automation?.[lane] || [])];
+    points[index] = { ...points[index], ...patch };
+    points.sort((a, b) => a.time - b.time);
+    changeTrack({ ...track, automation: { ...(track.automation || {}), [lane]: points } });
+  };
+
+  const deleteAutomationPoint = (trackId, lane, index) => {
+    const track = sessionRef.current?.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const points = (track.automation?.[lane] || []).filter((_, i) => i !== index);
+    changeTrack({ ...track, automation: { ...(track.automation || {}), [lane]: points } });
   };
 
   const stopPlaybackForEdit = () => {
@@ -598,7 +655,10 @@ export default function App() {
     const colors = ["#5fd4a0", "#63a9ef", "#e3aa5b", "#d47be0", "#f07878", "#73c6c0"];
     const track = {
       id, name: name || `Vocal ${index + 1}`, color: colors[index % colors.length],
-      gain: 1, pan: 0, mute: false, solo: false, fx: { ...DEFAULT_FX }, takes: [], regions: [], regionsInitialized: true,
+      gain: 1, pan: 0, mute: false, solo: false, fx: { ...DEFAULT_FX },
+      pitch: { enabled: false, key: "C", scale: "major", amount: 0.85, speedMs: 70 },
+      automation: { volume: [], pan: [], send: [] }, pluginLatencySamples: 0,
+      takes: [], regions: [], regionsInitialized: true,
     };
     editSession((current) => ({ ...current, tracks: [...current.tracks, track] }), "add-track");
     setSelectedTrack(id);
@@ -649,6 +709,7 @@ export default function App() {
           className="shrink-0 rounded border border-line px-2 py-1 text-[10px] text-dim enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-40">Undo</button>
         <button onClick={redo} disabled={!canRedo} title="Redo · Ctrl/⌘ Shift Z"
           className="shrink-0 rounded border border-line px-2 py-1 text-[10px] text-dim enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-40">Redo</button>
+        {pitchPreparing && <span className="shrink-0 text-[10px] text-warn">Tuning vocals…</span>}
         <button onClick={saveState === "error" ? retrySave : undefined} disabled={saveState === "saving"}
           aria-live="polite" title={saveState === "error" ? "Click to retry saving this project" : undefined}
           className={`shrink-0 text-[10px] ${saveState === "error" ? "text-rec" : saveState === "saving" ? "text-dim" : "text-accent"}`}>
@@ -677,7 +738,13 @@ export default function App() {
         <div className="flex min-h-0 min-w-0">
           <Timeline tracks={session.tracks} playhead={playhead} onSeek={setPlayhead} />
           <aside className="w-72 shrink-0 border-l border-line bg-panel flex flex-col overflow-y-auto xl:w-80">
-          <FXPanel track={selected} onChange={(fx) => selected && changeTrack({ ...selected, fx })} />
+          <FXPanel track={selected} playhead={playhead} sampleRate={engineRef?.ctx?.sampleRate || session.sampleRate || 48000}
+            onChange={(fx) => selected && changeTrack({ ...selected, fx })}
+            onPitchChange={(pitch) => selected && changeTrack({ ...selected, pitch })}
+            onAutomationAdd={(lane) => selected && addAutomationPoint(selected.id, lane)}
+            onAutomationChange={(lane, index, patch) => selected && changeAutomation(selected.id, lane, index, patch)}
+            onAutomationDelete={(lane, index) => selected && deleteAutomationPoint(selected.id, lane, index)}
+            onLatencyChange={(samples) => selected && changeTrack({ ...selected, pluginLatencySamples: samples })} />
           <div className="flex-1" />
           <Tuner analyser={engineRef?.analyser || null} />
           </aside>
@@ -700,6 +767,7 @@ export default function App() {
         <MasterPanel
           settings={session.masterFx}
           lufs={lufs}
+          onResetMeter={resetLoudnessMeter}
           onChange={(m) => editSession((current) => ({ ...current, masterFx: m }), "master-fx")}
           onExport={exportMixdown}
         />

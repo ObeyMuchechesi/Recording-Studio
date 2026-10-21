@@ -23,8 +23,11 @@ const TakeSchema = new mongoose.Schema({
   sampleRate: Number,
   gain:       { type: Number, default: 1 },
   mute:       Boolean,
-  // 24-bit WAV data, base64. In production use S3/GridFS — Mongo docs cap at 16MB.
-  wavBase64:  { type: String, required: true },
+  // Legacy sessions keep base64 audio; new takes live in chunk documents.
+  wavBase64:  String,
+  audioStorageKey: String,
+  audioChunkCount: Number,
+  audioByteLength: Number,
 }, { timestamps: true });
 
 const RegionSchema = new mongoose.Schema({
@@ -38,6 +41,17 @@ const RegionSchema = new mongoose.Schema({
   gain:          { type: Number, default: 1, min: 0 },
 }, { timestamps: true });
 
+const AutomationPointSchema = new mongoose.Schema({
+  time: { type: Number, required: true, min: 0 },
+  value: { type: Number, required: true },
+}, { _id: false });
+
+const AutomationSchema = new mongoose.Schema({
+  volume: [AutomationPointSchema],
+  pan: [AutomationPointSchema],
+  send: [AutomationPointSchema],
+}, { _id: false });
+
 const TrackSchema = new mongoose.Schema({
   name:    String,
   color:   String,
@@ -46,6 +60,9 @@ const TrackSchema = new mongoose.Schema({
   mute:    Boolean,
   solo:    Boolean,
   fx:      FxSchema,
+  pitch:   { enabled: Boolean, key: String, scale: String, amount: Number, speedMs: Number },
+  automation: AutomationSchema,
+  pluginLatencySamples: { type: Number, default: 0, min: 0, max: 192000 },
   takes:   [TakeSchema],
   regionsInitialized: { type: Boolean, default: false },
   regions: [RegionSchema],

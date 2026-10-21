@@ -1,4 +1,5 @@
 import { buildVocalStrip, buildReverbBus, buildMasterChain, prepareContext } from "./effects.js";
+import { scheduleAutomation } from "./automation.js";
 
 const WORKLET_SRC = `
 class RecorderProcessor extends AudioWorkletProcessor {
@@ -67,6 +68,7 @@ export class StudioEngine {
     this.playing = false;
     this.playStartCtx = 0;
     this.playStartPos = 0;
+    this.compensationLatencySeconds = 0;
     this.metronome = { enabled: false, bpm: 100, nextNote: 0, beat: 0, timer: null };
   }
 
@@ -235,8 +237,18 @@ export class StudioEngine {
     this.stopPlay();
     const ctx = this.ctx;
     const t0 = ctx.currentTime + 0.06;
+    const maxLatencySamples = Math.max(0, ...tracks.map((track) => Number(track.pluginLatencySamples) || 0));
+    this.compensationLatencySeconds = maxLatencySamples / ctx.sampleRate;
+    const anySolo = tracks.some((track) => track.solo);
     for (const track of tracks) {
       const strip = this.getOrCreateStrip(track);
+      const compensation = (maxLatencySamples - (Number(track.pluginLatencySamples) || 0)) / ctx.sampleRate;
+      const automationAt = t0 + compensation;
+      const audible = !track.mute && (!anySolo || track.solo);
+      const automationVolume = (track.automation?.volume || []).map((point) => ({ ...point, value: audible ? point.value : 0 }));
+      scheduleAutomation(strip.gainParam, automationVolume, audible ? track.gain ?? 1 : 0, automationAt, fromPos);
+      scheduleAutomation(strip.panParam, track.automation?.pan, track.pan ?? 0, automationAt, fromPos);
+      scheduleAutomation(strip.sendParam, track.automation?.send, track.fx?.reverb?.on ? track.fx.reverb.mix ?? 0 : 0, automationAt, fromPos);
       const takes = new Map((track.takes || []).map((take) => [String(take.id), take]));
       for (const region of track.regions || []) {
         const take = takes.get(String(region.takeId));
@@ -261,7 +273,7 @@ export class StudioEngine {
         const fadeInLevel = fadeIn > 0 ? Math.min(1, elapsed / fadeIn) : 1;
         const fadeOutLevel = fadeOut > 0 ? Math.min(1, (duration - elapsed) / fadeOut) : 1;
         const regionGain = (region.gain ?? 1) * (take.gain ?? 1) * (take.mute ? 0 : 1);
-        const when = t0 + Math.max(0, timelineStart - fromPos);
+        const when = t0 + compensation + Math.max(0, timelineStart - fromPos);
         gain.gain.setValueAtTime(regionGain * fadeInLevel * fadeOutLevel, when);
         if (fadeIn > elapsed) gain.gain.linearRampToValueAtTime(regionGain, when + fadeIn - elapsed);
         const fadeOutAt = duration - fadeOut - elapsed;

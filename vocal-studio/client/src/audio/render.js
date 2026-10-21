@@ -1,5 +1,6 @@
 import { buildVocalStrip, buildReverbBus, buildMasterChain, prepareContext } from "./effects.js";
 import { encodeWAV } from "./wav.js";
+import { scheduleAutomation } from "./automation.js";
 
 export async function renderMixdown({ tracks, masterFx, sampleRate, lengthSec }) {
   const length = Math.ceil(lengthSec * sampleRate) + 1;
@@ -11,6 +12,8 @@ export async function renderMixdown({ tracks, masterFx, sampleRate, lengthSec })
   reverb.output.connect(master.input);
 
   const anySolo = tracks.some((t) => t.solo);
+  const maxLatencySamples = Math.max(0, ...tracks.map((track) => Number(track.pluginLatencySamples) || 0));
+  const compensationLatencySeconds = maxLatencySamples / sampleRate;
 
   for (const track of tracks) {
     const strip = buildVocalStrip(ctx, track.fx || {}, reverb);
@@ -19,6 +22,11 @@ export async function renderMixdown({ tracks, masterFx, sampleRate, lengthSec })
     strip.setGain(aud ? (track.gain ?? 1) : 0);
     strip.setPan(track.pan ?? 0);
     strip.setSend(track.fx?.reverb?.on ? track.fx.reverb.mix : 0);
+    const compensation = (maxLatencySamples - (Number(track.pluginLatencySamples) || 0)) / sampleRate;
+    const audibleVolume = aud ? (track.automation?.volume || []).map((point) => ({ ...point, value: point.value })) : [];
+    scheduleAutomation(strip.gainParam, audibleVolume, aud ? track.gain ?? 1 : 0, compensation, 0);
+    scheduleAutomation(strip.panParam, track.automation?.pan, track.pan ?? 0, compensation, 0);
+    scheduleAutomation(strip.sendParam, track.automation?.send, track.fx?.reverb?.on ? track.fx.reverb.mix ?? 0 : 0, compensation, 0);
 
     const takes = new Map((track.takes || []).map((take) => [String(take.id), take]));
     for (const region of track.regions || []) {
@@ -45,7 +53,7 @@ export async function renderMixdown({ tracks, masterFx, sampleRate, lengthSec })
         g.gain.linearRampToValueAtTime(0, timelineStart + duration);
       }
       src.connect(g).connect(strip.input);
-      src.start(timelineStart, sourceStart, duration);
+      src.start(timelineStart + compensation, sourceStart, duration);
     }
   }
 

@@ -180,8 +180,12 @@ export function buildGate(ctx, p = {}) {
 
 /* ---- LUFS meter (AudioWorklet, analysis-only) ---- */
 export function buildLufsMeter(ctx, onReport) {
-  const node = new AudioWorkletNode(ctx, "lufs-processor");
+  const node = new AudioWorkletNode(ctx, "lufs-processor", {
+    numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+  });
   node.port.onmessage = (e) => onReport(e.data);
+  // The processor's output is silent; connecting it keeps analysis active.
+  node.connect(ctx.destination);
   return node;
 }
 
@@ -210,6 +214,9 @@ export function buildVocalStrip(ctx, settings = {}, reverbSendBus) {
   return {
     input: chain.gate.input,
     output: panner || out,
+    gainParam: out.gain,
+    panParam: panner?.pan || null,
+    sendParam: send.gain,
     setGain(v)  { out.gain.value = v; },
     setPan(v)   { if (panner) panner.pan.value = v; },
     setSend(v)  { send.gain.value = v; },
@@ -240,6 +247,7 @@ export function buildMasterChain(ctx, settings = {}, onLufs) {
   return {
     input: eq.input,
     output: out,
+    resetMeter() { meter.port.postMessage("reset"); },
     update(s) {
       if (s.eq)      eq.update(s.eq);
       if (s.comp)    glue.update(s.comp);

@@ -50,11 +50,15 @@ export async function decodeWAVBase64(b64, ctx, sampleRate = 48000) {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return decodeWAVArrayBuffer(bytes.buffer, ctx, sampleRate);
+}
+
+export async function decodeWAVArrayBuffer(buffer, ctx, sampleRate = 48000) {
   const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const decoder = ctx || (OfflineContext
     ? new OfflineContext(1, 1, sampleRate)
     : new (window.AudioContext || window.webkitAudioContext)({ sampleRate }));
-  const buf = await decoder.decodeAudioData(bytes.buffer.slice(0));
+  const buf = await decoder.decodeAudioData(buffer.slice(0));
   return buf.getChannelData(0).slice();
 }
 

@@ -13,8 +13,10 @@ function Slider({ label, value, min, max, step, unit, onChange }) {
   );
 }
 
-export default function MasterPanel({ settings, lufs, onChange, onExport }) {
+export default function MasterPanel({ settings, lufs, onChange, onExport, onResetMeter }) {
   const s = settings || {};
+  const meter = lufs || {};
+  const meterValue = (value, unit) => Number.isFinite(value) ? `${value.toFixed(1)} ${unit}` : "—";
   const update = (k, v) => onChange({ ...s, [k]: { ...(s[k] || {}), ...v } });
   return (
     <div className="min-h-0 overflow-y-auto border-t border-line bg-panel p-3 grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-4">
@@ -38,11 +40,18 @@ export default function MasterPanel({ settings, lufs, onChange, onExport }) {
         <Slider label="Output"    value={s.output ?? 1}              min={0} max={2} step={0.01} onChange={(v) => onChange({ ...s, output: v })} />
       </div>
       <div>
-        <div className="text-[10px] tracking-widest text-dim uppercase mb-2">Meter (LUFS)</div>
-        <div className="font-mono text-sm">
-          <div>Momentary: <span className="text-accent">{isFinite(lufs.momentary) ? lufs.momentary.toFixed(1) : "—"} LUFS</span></div>
-          <div>Short-term: <span className="text-accent">{isFinite(lufs.shortTerm) ? lufs.shortTerm.toFixed(1) : "—"} LUFS</span></div>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-[10px] tracking-widest text-dim uppercase">Loudness & Peak</div>
+          <button onClick={onResetMeter} className="rounded border border-line px-2 py-0.5 text-[10px] text-dim hover:text-ink">Reset</button>
         </div>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-xs">
+          <div>Momentary <span className="text-accent">{meterValue(meter.momentary, "LUFS")}</span></div>
+          <div>Short-term <span className="text-accent">{meterValue(meter.shortTerm, "LUFS")}</span></div>
+          <div>Integrated* <span className="text-accent">{meterValue(meter.integrated, "LUFS")}</span></div>
+          <div>Sample peak <span className="text-accent">{meterValue(meter.samplePeak, "dBFS")}</span></div>
+          <div>4× peak est. <span className="text-accent">{meterValue(meter.truePeak, "dBFS")}</span></div>
+        </div>
+        <div className="mt-1 text-[9px] leading-tight text-dim">*Integrated uses a simplified absolute gate; peak interpolation is an estimate.</div>
         <button onClick={onExport} className="mt-3 bg-accent text-black font-semibold rounded px-3 py-1 text-sm">
           Export Mixdown (24-bit WAV)
         </button>
