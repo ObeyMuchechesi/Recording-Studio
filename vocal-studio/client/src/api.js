@@ -25,6 +25,7 @@ async function req(method, url, body) {
 }
 
 export const api = {
+  me:       ()              => req("GET", "/auth/me"),
   register: (email, password) => req("POST", "/auth/register", { email, password }),
   login:    (email, password) => req("POST", "/auth/login", { email, password }),
   listSessions:      ()      => req("GET", "/sessions"),

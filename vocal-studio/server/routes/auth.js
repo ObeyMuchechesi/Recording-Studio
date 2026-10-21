@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { User } = require("../models");
 const asyncHandler = require("../middleware/asyncHandler");
+const auth = require("../middleware/auth");
 
 const sign = (user) =>
   jwt.sign(
@@ -10,6 +11,10 @@ const sign = (user) =>
     process.env.JWT_SECRET,
     { expiresIn: "30d" }
   );
+
+router.get("/me", auth, (req, res) => {
+  res.json({ id: req.user.uid, email: req.user.email });
+});
 
 router.post("/register", asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};

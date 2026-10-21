@@ -73,6 +73,7 @@ export default function App() {
     if (!getToken()) { setBooting(false); return; }
     (async () => {
       try {
+        setUser(await api.me());
         const list = await api.listSessions();
         if (list.length) {
           await loadSession(list[0]._id);
