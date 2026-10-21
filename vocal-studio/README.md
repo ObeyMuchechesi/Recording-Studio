@@ -26,7 +26,7 @@ A browser-based multitrack vocal recording, mixing, and mastering studio.
        npm install
        npm run dev
 
-5. Open http://localhost:5173, register, select Connect Input, and grant microphone access. Calibrate latency, set the tempo and count-in, then record each part. Use the mixer and master controls to shape the session and export a 24-bit WAV mixdown.
+5. Open http://localhost:5173 and register. Each project starts with a vocal track. Use **+ Add Vocal** to create a named track for each singer or part (for example, “Maya — Alto” or “Jon — Bass”). Select an audio input, connect it, choose the track’s **Arm** button, then record that singer’s takes. Tracks stay aligned in the shared project timeline, and the mixer lets you balance each singer independently. Calibrate latency, set the tempo and count-in, then use the master controls to shape and export a 24-bit WAV mixdown.
 
 ## Deploy to Vercel
 
@@ -39,8 +39,9 @@ The Vercel app serves the built client and Express API on the same domain. Confi
 
 ## Features
 
-- Multiple vocal tracks with takes, timeline playback, and recording
-- Input connection, latency calibration, count-in, and metronome
+- Named vocal tracks for separate singers/parts, each with its own record arm and takes in one shared project
+- Per-track rename, input-device selection, live input metering, optional headphone monitoring, and autosaved project settings/mix
+- Timeline playback, latency calibration, count-in, and metronome
 - Per-track gate, high-pass filter, de-esser, EQ, compressor, saturation, and reverb send
 - Mixer controls for level, pan, mute, and solo
 - Master EQ, glue compression, limiter, LUFS and true-peak metering

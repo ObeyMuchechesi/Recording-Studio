@@ -4,6 +4,7 @@ export default function Timeline({ tracks, playhead, onSeek }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const ppsec = 120;
+  const labelWidth = 132;
   // Move the timeline in quarter-second steps while keeping the playhead visible.
   const scroll = Math.max(0, Math.floor((playhead - 4) * 4) / 4);
 
@@ -22,12 +23,14 @@ export default function Timeline({ tracks, playhead, onSeek }) {
 
       const RULER = 24;
       ctx.fillStyle = "#121821"; ctx.fillRect(0, 0, w, RULER);
+      ctx.fillStyle = "#77869d";
       ctx.font = "10px ui-monospace, monospace";
       ctx.textBaseline = "middle";
+      ctx.fillText("VOCALS / PARTS", 12, 12);
       const firstSecond = Math.floor(scroll);
-      const lastSecond = Math.ceil(scroll + w / ppsec);
+      const lastSecond = Math.ceil(scroll + Math.max(0, w - labelWidth) / ppsec);
       for (let second = firstSecond; second <= lastSecond; second++) {
-        const x = (second - scroll) * ppsec;
+        const x = labelWidth + (second - scroll) * ppsec;
         const major = second % 5 === 0;
         ctx.strokeStyle = major ? "#344052" : "#222d3b";
         ctx.beginPath(); ctx.moveTo(x + 0.5, major ? 7 : 14); ctx.lineTo(x + 0.5, RULER); ctx.stroke();
@@ -46,12 +49,22 @@ export default function Timeline({ tracks, playhead, onSeek }) {
         const cy = y + laneHh / 2;
         ctx.fillStyle = i % 2 ? "#0c1017" : "#0a0e14";
         ctx.fillRect(0, y - 2, w, laneHh + 2);
+        ctx.fillStyle = "#101720";
+        ctx.fillRect(0, y, labelWidth - 1, laneHh);
+        ctx.fillStyle = track.color || "#5fd4a0";
+        ctx.fillRect(0, y, 3, laneHh);
+        ctx.fillStyle = "#c9d6e6";
+        ctx.font = "600 11px system-ui, sans-serif";
+        ctx.fillText(track.name || `Vocal ${i + 1}`, 12, y + 14, labelWidth - 22);
+        ctx.fillStyle = "#718198";
+        ctx.font = "10px ui-monospace, monospace";
+        ctx.fillText(`${(track.takes || []).length} ${(track.takes || []).length === 1 ? "take" : "takes"}`, 12, y + 31, labelWidth - 22);
         for (const take of track.takes || []) {
           if (!take.peaks) continue;
-          const x1 = (take.offset - scroll) * ppsec;
+          const x1 = labelWidth + (take.offset - scroll) * ppsec;
           const x2 = x1 + take.duration * ppsec;
-          if (x2 < 0 || x1 > w) continue;
-          const bx = Math.max(x1, 0);
+          if (x2 < labelWidth || x1 > w) continue;
+          const bx = Math.max(x1, labelWidth);
           const bw = Math.min(x2, w) - bx;
           if (bw <= 0) continue;
           ctx.fillStyle = "#12202f";
@@ -61,9 +74,9 @@ export default function Timeline({ tracks, playhead, onSeek }) {
           const peaks = take.peaks;
           const nb = peaks.length / 2;
           ctx.strokeStyle = "#5fd4a0"; ctx.beginPath();
-          for (let px = Math.max(0, Math.floor(x1)); px < Math.min(w, Math.ceil(x2)); px++) {
-            const tA = scroll + px / ppsec;
-            const tB = scroll + (px + 1) / ppsec;
+          for (let px = Math.max(labelWidth, Math.floor(x1)); px < Math.min(w, Math.ceil(x2)); px++) {
+            const tA = scroll + (px - labelWidth) / ppsec;
+            const tB = scroll + (px + 1 - labelWidth) / ppsec;
             let b0 = Math.floor((tA - take.offset) * take.sampleRate / 64);
             let b1 = Math.max(b0 + 1, Math.ceil((tB - take.offset) * take.sampleRate / 64));
             if (b0 < 0) b0 = 0; if (b1 > nb) b1 = nb;
@@ -89,14 +102,14 @@ export default function Timeline({ tracks, playhead, onSeek }) {
 
   const handleClick = (e) => {
     const rect = wrapRef.current.getBoundingClientRect();
-    onSeek(scroll + (e.clientX - rect.left) / ppsec);
+    onSeek(Math.max(0, scroll + (e.clientX - rect.left - labelWidth) / ppsec));
   };
 
   return (
     <div ref={wrapRef} className="relative min-w-0 flex-1 overflow-hidden bg-[#0b0e13]" onClick={handleClick}>
       <canvas ref={canvasRef} className="absolute inset-0 cursor-crosshair" />
       <div aria-hidden="true" className="absolute inset-y-0 w-0.5 bg-accent pointer-events-none"
-        style={{ left: `${(playhead - scroll) * ppsec}px` }} />
+        style={{ left: `${labelWidth + (playhead - scroll) * ppsec}px` }} />
     </div>
   );
 }

@@ -46,16 +46,34 @@ function makeTake(offset, data, sampleRate, name) {
            duration: data.length / sampleRate };
 }
 
+function serializeTrack(track) {
+  return {
+    name: track.name,
+    color: track.color,
+    gain: track.gain, pan: track.pan, mute: track.mute, solo: track.solo,
+    fx: track.fx,
+    takes: (track.takes || []).map((take) => ({
+      name: take.name, offset: take.offset, sampleRate: take.sampleRate,
+      gain: take.gain, mute: take.mute, wavBase64: take.wavBase64,
+    })),
+  };
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [booting, setBooting] = useState(true);
   const [engine, setEngine] = useState(null);
   const [connected, setConnected] = useState(false);
+  const [inputDevices, setInputDevices] = useState([]);
+  const [inputDeviceId, setInputDeviceId] = useState("");
 
   const [session, setSession] = useState(null);
   const [selectedTrack, setSelectedTrack] = useState(null);
+  const [armedTrackId, setArmedTrackId] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [monitoring, setMonitoring] = useState(false);
+  const [saveState, setSaveState] = useState("saved");
   const [playhead, setPlayhead] = useState(0);
   const [lufs, setLufs] = useState({ momentary: -Infinity, shortTerm: -Infinity });
   const [bpm, setBpm] = useState(100);
@@ -64,9 +82,12 @@ export default function App() {
   const [latencyMs, setLatencyMs] = useState(0);
 
   const rafRef = useRef(0);
+  const skipAutoSaveRef = useRef(false);
+  const saveRevisionRef = useRef(0);
   const recStartPosRef = useRef(0);
   const recRecordStartAtRef = useRef(0);
   const recCountInSecRef = useRef(0);
+  const recTrackIdRef = useRef(null);
 
   /* ---------- boot ---------- */
   useEffect(() => {
@@ -79,7 +100,14 @@ export default function App() {
           await loadSession(list[0]._id);
         } else {
           const s = await api.createSession({ name: "New Session" });
-          setSession(normalizeSession(s));
+          const norm = normalizeSession(s);
+          skipAutoSaveRef.current = true;
+          setSession(norm);
+          setBpm(norm.bpm || 100);
+          if (norm.tracks.length) {
+            setSelectedTrack(norm.tracks[0].id);
+            setArmedTrackId(norm.tracks[0].id);
+          }
         }
       } catch (e) { setToken(""); }
       setBooting(false);
@@ -127,9 +155,41 @@ export default function App() {
         }
       }
     }
+    skipAutoSaveRef.current = true;
     setSession(norm);
-    if (norm.tracks.length) setSelectedTrack(norm.tracks[0].id);
+    setBpm(norm.bpm || 100);
+    if (norm.tracks.length) {
+      setSelectedTrack(norm.tracks[0].id);
+      setArmedTrackId(norm.tracks[0].id);
+    }
   };
+
+  useEffect(() => {
+    if (!session || booting) return;
+    if (skipAutoSaveRef.current) {
+      skipAutoSaveRef.current = false;
+      setSaveState("saved");
+      return;
+    }
+
+    const revision = ++saveRevisionRef.current;
+    setSaveState("saving");
+    const timeout = window.setTimeout(async () => {
+      try {
+        await api.updateSession(session._id, {
+          name: session.name,
+          bpm,
+          sampleRate: session.sampleRate || 48000,
+          masterFx: session.masterFx,
+          tracks: session.tracks.map(serializeTrack),
+        });
+        if (revision === saveRevisionRef.current) setSaveState("saved");
+      } catch {
+        if (revision === saveRevisionRef.current) setSaveState("error");
+      }
+    }, 800);
+    return () => window.clearTimeout(timeout);
+  }, [session, bpm, booting]);
 
   /* ---------- engine attach ---------- */
   const ensureEngine = useCallback(async () => {
@@ -144,9 +204,23 @@ export default function App() {
   }, []);
 
   const connect = async () => {
+    if (recording) return alert("Stop the current take before changing the input");
     const e = await ensureEngine();
-    await e.connect();
+    await e.connect(inputDeviceId || undefined);
+    e.setMonitorEnabled(monitoring);
     setConnected(true);
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === "audioinput");
+    setInputDevices(inputs);
+    const activeId = e.stream?.getAudioTracks?.()[0]?.getSettings?.().deviceId;
+    if (activeId) setInputDeviceId(activeId);
+  };
+
+  const toggleMonitor = () => {
+    if (!connected || !engineRef) return;
+    const next = !monitoring;
+    engineRef.setMonitorEnabled(next);
+    setMonitoring(next);
   };
 
   /* ---------- sync engine with session state ---------- */
@@ -198,14 +272,22 @@ export default function App() {
   };
   const rewind = () => { stop(); setPlayhead(0); };
 
+  const changeBpm = (value) => {
+    const next = Math.max(30, Math.min(300, value || 100));
+    setBpm(next);
+    setSession((current) => current ? { ...current, bpm: next } : current);
+  };
+
   const startRecord = async () => {
     if (!connected) return alert("Connect input first");
     if (recording) { stopRecord(); return; }
+    if (!armedTrackId) return alert("Add and arm a vocal track before recording");
     await ensureEngine();
     stop();
     const countInSec = countIn * 4 * (60 / bpm);
     recStartPosRef.current = playhead;
     recCountInSecRef.current = countInSec;
+    recTrackIdRef.current = armedTrackId;
     engineRef.startCapture();
     engineRef.recStartCtxTime = engineRef.ctx.currentTime;
     recRecordStartAtRef.current = engineRef.ctx.currentTime + countInSec + 0.12;
@@ -225,41 +307,23 @@ export default function App() {
     const data = raw.slice(trim);
     if (data.length < sr * 0.15) { alert("Take too short"); return; }
 
-    const trackId = selectedTrack || session.tracks[0].id;
-    const take = makeTake(recStartPosRef.current, data, sr, `Take ${Date.now() % 1000}`);
-
-    const nextTracks = session.tracks.map((t) => t.id === trackId
-      ? { ...t, takes: [...t.takes, take] }
-      : t);
-
-    // persist
+    const trackId = recTrackIdRef.current || armedTrackId;
+    const targetTrack = session.tracks.find((track) => track.id === trackId);
+    const take = makeTake(recStartPosRef.current, data, sr, `Take ${(targetTrack?.takes?.length || 0) + 1}`);
+    let savedTake = take;
     try {
       const wavBlob = encodeWAV([data], sr, 24);
       const b64 = await blobToBase64(wavBlob);
-      const tracksToSave = nextTracks.map((t) => ({
-        ...t,
-        takes: t.takes.map((tk) => tk === take ? { ...tk, wavBase64: b64 } : tk),
-      }));
-      await api.updateSession(session._id, { tracks: tracksToSave.map(serializeTrack) });
-      setSession({ ...session, tracks: nextTracks });
+      savedTake = { ...take, wavBase64: b64 };
     } catch (e) {
-      // local-only fallback
-      setSession({ ...session, tracks: nextTracks });
-      alert("Saved locally only (server error: " + e.message + ")");
+      setSaveState("error");
+      alert("This take is playable for now, but its audio could not be prepared for saving: " + e.message);
     }
+    setSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === trackId
+      ? { ...track, takes: [...track.takes, savedTake] }
+      : track) }));
     setPlayhead(take.offset + take.duration);
   };
-
-  const serializeTrack = (t) => ({
-    name: t.name,
-    color: t.color,
-    gain: t.gain, pan: t.pan, mute: t.mute, solo: t.solo,
-    fx: t.fx,
-    takes: (t.takes || []).map((tk) => ({
-      name: tk.name, offset: tk.offset, sampleRate: tk.sampleRate,
-      gain: tk.gain, mute: tk.mute, wavBase64: tk.wavBase64,
-    })),
-  });
 
   const calibrate = async () => {
     if (!connected) return alert("Connect first");
@@ -304,16 +368,20 @@ export default function App() {
   };
 
   const changeTrack = (updated) => {
-    setSession({ ...session, tracks: session.tracks.map((t) => t.id === updated.id ? updated : t) });
+    setSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === updated.id ? updated : track) }));
   };
 
-  const addTrack = () => {
-    const id = "t" + Date.now();
-    const tracks = [...session.tracks, {
-      id, name: `Vocal ${session.tracks.length + 1}`, color: "#5fa8d4",
+  const addTrack = (name) => {
+    const id = globalThis.crypto?.randomUUID?.() || "t" + Date.now();
+    const index = session.tracks.length;
+    const colors = ["#5fd4a0", "#63a9ef", "#e3aa5b", "#d47be0", "#f07878", "#73c6c0"];
+    const track = {
+      id, name: name || `Vocal ${index + 1}`, color: colors[index % colors.length],
       gain: 1, pan: 0, mute: false, solo: false, fx: { ...DEFAULT_FX }, takes: [],
-    }];
-    setSession({ ...session, tracks });
+    };
+    setSession((current) => ({ ...current, tracks: [...current.tracks, track] }));
+    setSelectedTrack(id);
+    setArmedTrackId(id);
   };
 
   /* ---------- keyboard ---------- */
@@ -335,6 +403,8 @@ export default function App() {
   if (!session) return <div className="min-h-screen grid place-items-center text-dim">No session</div>;
 
   const selected = session.tracks.find((t) => t.id === selectedTrack);
+  const armedTrack = session.tracks.find((t) => t.id === armedTrackId);
+  const retrySave = () => setSession((current) => current ? { ...current } : current);
 
   return (
     <div className="studio-shell flex flex-col overflow-hidden">
@@ -343,21 +413,28 @@ export default function App() {
         <input className="flex-1 bg-panel2 border border-line rounded px-2 py-1 text-sm"
                value={session.name}
                onChange={(e) => setSession({ ...session, name: e.target.value })}
-               onBlur={() => api.updateSession(session._id, { name: session.name }).catch(() => {})} />
+               aria-label="Project name" />
+        <button onClick={saveState === "error" ? retrySave : undefined} disabled={saveState === "saving"}
+          aria-live="polite" title={saveState === "error" ? "Click to retry saving this project" : undefined}
+          className={`shrink-0 text-[10px] ${saveState === "error" ? "text-rec" : saveState === "saving" ? "text-dim" : "text-accent"}`}>
+          {saveState === "saving" ? "Saving…" : saveState === "error" ? "Save failed · Retry" : "Saved"}
+        </button>
         <div className="text-xs text-dim">{user.email}</div>
         <button className="text-xs px-2 py-1 rounded border border-line"
                 onClick={() => { setToken(""); setUser(null); window.location.reload(); }}>Sign out</button>
       </header>
 
       <Transport
-        state={{ playhead, playing, recording, bpm, countIn, metro }}
+        state={{ playhead, playing, recording, bpm, countIn, metro, recordTarget: armedTrack?.name }}
         onPlay={play} onStop={stop} onRecord={startRecord} onRewind={rewind}
-        onBpm={setBpm} onCountIn={setCountIn}
+        onBpm={changeBpm} onCountIn={setCountIn}
         onMetro={() => {
           const v = !metro; setMetro(v);
           if (engineRef) engineRef.setMetronome(v, bpm);
         }}
-        onCalibrate={calibrate} onConnect={connect} connected={connected}
+        onCalibrate={calibrate} onConnect={connect} onMonitor={toggleMonitor}
+        connected={connected} monitoring={monitoring} analyser={engineRef?.analyser || null}
+        inputDevices={inputDevices} inputDeviceId={inputDeviceId} onInputDeviceChange={setInputDeviceId}
       />
 
       <div className="min-h-0 flex-1 grid grid-rows-[minmax(0,1fr)_minmax(150px,22vh)_minmax(190px,27vh)]">
@@ -373,7 +450,9 @@ export default function App() {
         <Mixer
           tracks={session.tracks}
           selectedId={selectedTrack}
+          armedId={armedTrackId}
           onSelect={setSelectedTrack}
+          onArm={(id) => { setSelectedTrack(id); setArmedTrackId(id); }}
           onTrackChange={changeTrack}
           onAddTrack={addTrack}
         />

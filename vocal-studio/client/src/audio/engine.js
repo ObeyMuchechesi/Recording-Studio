@@ -50,6 +50,7 @@ export class StudioEngine {
     this.stream = null;
     this.mic = null;
     this.inputGain = null;
+    this.monitorGain = null;
     this.recNode = null;
     this.recSink = null;
     this.recording = false;
@@ -90,6 +91,10 @@ export class StudioEngine {
   async connect(deviceId) {
     await this.init();
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+    for (const node of [this.mic, this.inputGain, this.analyser, this.recNode, this.recSink, this.monitorGain]) {
+      try { node?.disconnect(); } catch {}
+    }
+    try { this.recNode?.port.close(); } catch {}
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -100,6 +105,8 @@ export class StudioEngine {
     });
     this.mic = this.ctx.createMediaStreamSource(this.stream);
     this.inputGain = this.ctx.createGain();
+    this.monitorGain = this.ctx.createGain();
+    this.monitorGain.gain.value = 0;
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 2048;
     this.recNode = new AudioWorkletNode(this.ctx, "recorder-processor");
@@ -124,10 +131,18 @@ export class StudioEngine {
     this.mic.connect(this.inputGain);
     this.inputGain.connect(this.analyser);
     this.inputGain.connect(this.recNode);
+    this.inputGain.connect(this.monitorGain);
+    this.monitorGain.connect(this.master.input);
     this.recNode.connect(this.recSink).connect(this.ctx.destination);
   }
 
   setInputGain(db) { if (this.inputGain) this.inputGain.gain.value = Math.pow(10, db / 20); }
+
+  setMonitorEnabled(enabled) {
+    if (!this.monitorGain) return false;
+    this.monitorGain.gain.setTargetAtTime(enabled ? 1 : 0, this.ctx.currentTime, 0.015);
+    return true;
+  }
 
   /* ---------- takes / strips ---------- */
   getOrCreateStrip(track) {
