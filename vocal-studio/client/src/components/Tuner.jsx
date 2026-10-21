@@ -8,10 +8,14 @@ export default function Tuner({ analyser }) {
   useEffect(() => {
     if (!analyser) return;
     const buf = new Float32Array(analyser.fftSize);
+    let lastScan = 0;
     const tick = () => {
-      analyser.getFloatTimeDomainData(buf);
-      const p = detectPitch(buf, analyser.context.sampleRate);
-      setNote(p);
+      const now = performance.now();
+      if (now - lastScan >= 100) {
+        lastScan = now;
+        analyser.getFloatTimeDomainData(buf);
+        setNote(detectPitch(buf, analyser.context.sampleRate));
+      }
       raf.current = requestAnimationFrame(tick);
     };
     tick();

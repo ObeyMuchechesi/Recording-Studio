@@ -203,8 +203,7 @@ export function buildVocalStrip(ctx, settings = {}, reverbSendBus) {
   const send  = ctx.createGain(); send.gain.value = settings.reverb?.mix ?? 0;
 
   chain.sat.output.connect(out);
-  if (panner) { out.connect(panner); panner.connect(ctx.destination); }
-  else        out.connect(ctx.destination);
+  if (panner) out.connect(panner);
   chain.sat.output.connect(send);
   if (reverbSendBus) send.connect(reverbSendBus.input);
 

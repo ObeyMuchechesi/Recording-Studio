@@ -4,18 +4,39 @@ const WORKLET_SRC = `
 class RecorderProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.active = true;
-    this.port.onmessage = (e) => { this.active = e.data === "start"; };
+    this.active = false;
+    this.chunkSize = Math.max(2048, Math.round(sampleRate * 0.25));
+    this.buffer = new Float32Array(this.chunkSize);
+    this.offset = 0;
+    this.flush = () => {
+      if (!this.offset) return;
+      const samples = this.buffer.slice(0, this.offset);
+      this.buffer = new Float32Array(this.chunkSize);
+      this.offset = 0;
+      this.port.postMessage({ type: "chunk", samples }, [samples.buffer]);
+    };
+    this.port.onmessage = (e) => {
+      if (e.data === "start") {
+        this.offset = 0;
+        this.active = true;
+      } else if (e.data === "stop") {
+        this.active = false;
+        this.flush();
+        this.port.postMessage({ type: "stopped" });
+      }
+    };
   }
   process(inputs) {
     const input = inputs[0];
     if (this.active && input && input.length) {
       const n = input[0].length;
-      const mono = new Float32Array(n);
       const chCount = input.length;
-      for (let c = 0; c < chCount; c++)
-        for (let i = 0; i < n; i++) mono[i] += input[c][i] / chCount;
-      this.port.postMessage(mono, [mono.buffer]);
+      for (let i = 0; i < n; i++) {
+        let mono = 0;
+        for (let c = 0; c < chCount; c++) mono += input[c][i];
+        this.buffer[this.offset++] = mono / chCount;
+        if (this.offset === this.chunkSize) this.flush();
+      }
     }
     return true;
   }
@@ -33,6 +54,8 @@ export class StudioEngine {
     this.recSink = null;
     this.recording = false;
     this.chunks = [];
+    this.captureStopPromise = null;
+    this.captureStopResolve = null;
     this.recStartCtxTime = 0;
     this.analyser = null;
     this.reverbBus = null;
@@ -81,7 +104,20 @@ export class StudioEngine {
     this.analyser.fftSize = 2048;
     this.recNode = new AudioWorkletNode(this.ctx, "recorder-processor");
     this.recNode.port.onmessage = (e) => {
-      if (this.recording) this.chunks.push(new Float32Array(e.data));
+      if (e.data?.type === "chunk" && this.recording) {
+        this.chunks.push(e.data.samples);
+      } else if (e.data?.type === "stopped") {
+        this.recording = false;
+        const total = this.chunks.reduce((a, c) => a + c.length, 0);
+        const out = new Float32Array(total);
+        let offset = 0;
+        for (const chunk of this.chunks) { out.set(chunk, offset); offset += chunk.length; }
+        this.chunks = [];
+        const resolve = this.captureStopResolve;
+        this.captureStopResolve = null;
+        this.captureStopPromise = null;
+        resolve?.(out);
+      }
     };
     this.recSink = this.ctx.createGain(); this.recSink.gain.value = 0;
 
@@ -125,20 +161,19 @@ export class StudioEngine {
 
   /* ---------- recording ---------- */
   startCapture() {
+    if (!this.recNode) throw new Error("Connect an input before recording");
+    if (this.recording) throw new Error("A recording is already in progress");
     this.chunks = [];
     this.recording = true;
     this.recStartCtxTime = this.ctx.currentTime;
     this.recNode.port.postMessage("start");
   }
   stopCapture() {
-    this.recording = false;
+    if (!this.recording || !this.recNode) return Promise.resolve(new Float32Array(0));
+    if (this.captureStopPromise) return this.captureStopPromise;
+    this.captureStopPromise = new Promise((resolve) => { this.captureStopResolve = resolve; });
     this.recNode.port.postMessage("stop");
-    const total = this.chunks.reduce((a, c) => a + c.length, 0);
-    const out = new Float32Array(total);
-    let o = 0;
-    for (const c of this.chunks) { out.set(c, o); o += c.length; }
-    this.chunks = [];
-    return out;
+    return this.captureStopPromise;
   }
 
   /* ---------- metronome ---------- */
@@ -183,7 +218,9 @@ export class StudioEngine {
     for (const track of tracks) {
       const strip = this.getOrCreateStrip(track);
       for (const take of track.takes || []) {
-        const end = take.offset + take.duration;
+        if (!take.data?.length || !Number.isFinite(take.sampleRate) || take.sampleRate <= 0) continue;
+        const duration = take.duration ?? take.data.length / take.sampleRate;
+        const end = take.offset + duration;
         if (end <= fromPos) continue;
         const buf = ctx.createBuffer(1, take.data.length, take.sampleRate);
         buf.copyToChannel(take.data, 0);

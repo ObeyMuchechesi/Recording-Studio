@@ -107,25 +107,23 @@ export default function App() {
     const s = await api.getSession(id);
     const norm = normalizeSession(s);
     // decode all take data
-    if (engineRef?.ctx) {
-      for (const track of norm.tracks) {
-        for (const take of track.takes) {
-          if (take.wavBase64) {
-            take.data = await decodeWAVBase64(take.wavBase64, engineRef.ctx);
-            const peaks = new Float32Array(Math.ceil(take.data.length / 64) * 2);
-            for (let i = 0; i < take.data.length; i += 64) {
-              let mn = 1, mx = -1;
-              const end = Math.min(take.data.length, i + 64);
-              for (let j = i; j < end; j++) {
-                if (take.data[j] < mn) mn = take.data[j];
-                if (take.data[j] > mx) mx = take.data[j];
-              }
-              const b = (i / 64) | 0;
-              peaks[b * 2] = mn; peaks[b * 2 + 1] = mx;
+    for (const track of norm.tracks) {
+      for (const take of track.takes) {
+        if (take.wavBase64) {
+          take.data = await decodeWAVBase64(take.wavBase64, engineRef?.ctx, take.sampleRate);
+          const peaks = new Float32Array(Math.ceil(take.data.length / 64) * 2);
+          for (let i = 0; i < take.data.length; i += 64) {
+            let mn = 1, mx = -1;
+            const end = Math.min(take.data.length, i + 64);
+            for (let j = i; j < end; j++) {
+              if (take.data[j] < mn) mn = take.data[j];
+              if (take.data[j] > mx) mx = take.data[j];
             }
-            take.peaks = peaks;
-            take.duration = take.data.length / take.sampleRate;
+            const b = (i / 64) | 0;
+            peaks[b * 2] = mn; peaks[b * 2 + 1] = mx;
           }
+          take.peaks = peaks;
+          take.duration = take.data.length / take.sampleRate;
         }
       }
     }
@@ -141,6 +139,7 @@ export default function App() {
       await engineRef.init();
       setEngine(engineRef);
     }
+    if (engineRef.ctx.state === "suspended") await engineRef.ctx.resume();
     return engineRef;
   }, []);
 
@@ -156,13 +155,13 @@ export default function App() {
     engineRef.updateTrackMix(session.tracks);
     engineRef.updateMaster(session.masterFx);
     if (session.tracks.length && !selectedTrack) setSelectedTrack(session.tracks[0].id);
-  }, [session, selectedTrack]);
+  }, [engine, session, selectedTrack]);
 
   useEffect(() => {
     if (!engineRef || !session || !selectedTrack) return;
     const track = session.tracks.find((t) => t.id === selectedTrack);
     if (track) engineRef.updateTrackFx(track);
-  }, [session, selectedTrack]);
+  }, [engine, session, selectedTrack]);
 
   /* ---------- playhead loop ---------- */
   useEffect(() => {
@@ -185,12 +184,14 @@ export default function App() {
   }, [session]);
 
   /* ---------- transport handlers ---------- */
-  const play = () => {
-    if (!engineRef || !session) return;
-    engineRef.playTakes(session.tracks, playhead);
+  const play = async () => {
+    if (!session || playing) return;
+    const e = await ensureEngine();
+    e.playTakes(session.tracks, playhead);
     setPlaying(true);
   };
   const stop = () => {
+    if (recording) { stopRecord(); return; }
     if (!engineRef) return;
     engineRef.stopPlay();
     setPlaying(false);
@@ -217,7 +218,7 @@ export default function App() {
     if (!recording) return;
     setRecording(false);
     if (metro) engineRef.stopMetronome();
-    const raw = engineRef.stopCapture();
+    const raw = await engineRef.stopCapture();
     const sr = engineRef.ctx.sampleRate;
     let trim = Math.round((recRecordStartAtRef.current - engineRef.recStartCtxTime + latencyMs / 1000) * sr);
     trim = Math.max(0, Math.min(trim, raw.length));
@@ -227,20 +228,23 @@ export default function App() {
     const trackId = selectedTrack || session.tracks[0].id;
     const take = makeTake(recStartPosRef.current, data, sr, `Take ${Date.now() % 1000}`);
 
+    const nextTracks = session.tracks.map((t) => t.id === trackId
+      ? { ...t, takes: [...t.takes, take] }
+      : t);
+
     // persist
     try {
       const wavBlob = encodeWAV([data], sr, 24);
       const b64 = await blobToBase64(wavBlob);
-      // Update via session PATCH (simple: overwrite the track array).
-      const newTracks = session.tracks.map((t) => {
-        if (t.id !== trackId) return t;
-        return { ...t, takes: [...t.takes, { ...take, data: undefined, peaks: undefined, wavBase64: b64 }] };
-      });
-      await api.updateSession(session._id, { tracks: newTracks.map(serializeTrack) });
-      setSession({ ...session, tracks: newTracks.map((t) => t.id === trackId ? { ...t, takes: [...t.takes, take] } : t) });
+      const tracksToSave = nextTracks.map((t) => ({
+        ...t,
+        takes: t.takes.map((tk) => tk === take ? { ...tk, wavBase64: b64 } : tk),
+      }));
+      await api.updateSession(session._id, { tracks: tracksToSave.map(serializeTrack) });
+      setSession({ ...session, tracks: nextTracks });
     } catch (e) {
       // local-only fallback
-      setSession({ ...session, tracks: session.tracks.map((t) => t.id === trackId ? { ...t, takes: [...t.takes, take] } : t) });
+      setSession({ ...session, tracks: nextTracks });
       alert("Saved locally only (server error: " + e.message + ")");
     }
     setPlayhead(take.offset + take.duration);
@@ -272,7 +276,7 @@ export default function App() {
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
     osc.connect(g).connect(ctx.destination); osc.start(t0); osc.stop(t0 + 0.06);
     await new Promise((r) => setTimeout(r, 900));
-    const raw = engineRef.stopCapture();
+    const raw = await engineRef.stopCapture();
     const sr = ctx.sampleRate;
     let peakIdx = 0, peakVal = 0;
     for (let i = 0; i < raw.length; i++) {
@@ -333,8 +337,8 @@ export default function App() {
   const selected = session.tracks.find((t) => t.id === selectedTrack);
 
   return (
-    <div className="h-screen flex flex-col">
-      <header className="flex items-center gap-4 px-4 py-2 bg-panel border-b border-line">
+    <div className="studio-shell flex flex-col overflow-hidden">
+      <header className="flex shrink-0 items-center gap-4 px-4 py-2 bg-panel border-b border-line">
         <div className="font-bold tracking-widest text-accent text-sm">◆ VOCAL<span className="text-dim">STUDIO</span></div>
         <input className="flex-1 bg-panel2 border border-line rounded px-2 py-1 text-sm"
                value={session.name}
@@ -356,29 +360,31 @@ export default function App() {
         onCalibrate={calibrate} onConnect={connect} connected={connected}
       />
 
-      <div className="flex-1 flex min-h-0">
-        <Timeline tracks={session.tracks} playhead={playhead} onSeek={setPlayhead} />
-        <aside className="w-80 border-l border-line bg-panel flex flex-col overflow-y-auto">
+      <div className="min-h-0 flex-1 grid grid-rows-[minmax(0,1fr)_minmax(150px,22vh)_minmax(190px,27vh)]">
+        <div className="flex min-h-0 min-w-0">
+          <Timeline tracks={session.tracks} playhead={playhead} onSeek={setPlayhead} />
+          <aside className="w-72 shrink-0 border-l border-line bg-panel flex flex-col overflow-y-auto xl:w-80">
           <FXPanel track={selected} onChange={(fx) => selected && changeTrack({ ...selected, fx })} />
           <div className="flex-1" />
           <Tuner analyser={engineRef?.analyser || null} />
-        </aside>
+          </aside>
+        </div>
+
+        <Mixer
+          tracks={session.tracks}
+          selectedId={selectedTrack}
+          onSelect={setSelectedTrack}
+          onTrackChange={changeTrack}
+          onAddTrack={addTrack}
+        />
+
+        <MasterPanel
+          settings={session.masterFx}
+          lufs={lufs}
+          onChange={(m) => setSession({ ...session, masterFx: m })}
+          onExport={exportMixdown}
+        />
       </div>
-
-      <Mixer
-        tracks={session.tracks}
-        selectedId={selectedTrack}
-        onSelect={setSelectedTrack}
-        onTrackChange={changeTrack}
-        onAddTrack={addTrack}
-      />
-
-      <MasterPanel
-        settings={session.masterFx}
-        lufs={lufs}
-        onChange={(m) => setSession({ ...session, masterFx: m })}
-        onExport={exportMixdown}
-      />
     </div>
   );
 }

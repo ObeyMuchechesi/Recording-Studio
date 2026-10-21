@@ -17,7 +17,7 @@ export default function MasterPanel({ settings, lufs, onChange, onExport }) {
   const s = settings || {};
   const update = (k, v) => onChange({ ...s, [k]: { ...(s[k] || {}), ...v } });
   return (
-    <div className="p-3 bg-panel border-t border-line grid grid-cols-1 lg:grid-cols-4 gap-4">
+    <div className="min-h-0 overflow-y-auto border-t border-line bg-panel p-3 grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-4">
       <div>
         <div className="text-[10px] tracking-widest text-dim uppercase mb-2">Master EQ</div>
         <Slider label="Low"  value={s.eq?.low ?? 0}  min={-10} max={10} step={0.5} unit=" dB" onChange={(v) => update("eq", { low: v })} />

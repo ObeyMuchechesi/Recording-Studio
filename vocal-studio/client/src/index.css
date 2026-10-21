@@ -4,6 +4,7 @@
 
 html, body, #root { height: 100%; }
 body { @apply bg-bg text-ink font-sans overflow-hidden; }
+.studio-shell { height: 100vh; height: 100dvh; }
 
 .fader { -webkit-appearance: slider-vertical; appearance: slider-vertical; width: 8px; }
 input[type=range] { accent-color: #5fd4a0; }

@@ -3,7 +3,7 @@ import React, { useEffect, useRef } from "react";
 function TrackStrip({ track, selected, onSelect, onChange }) {
   return (
     <div onClick={onSelect}
-      className={`w-24 shrink-0 p-2 rounded border cursor-pointer flex flex-col items-center gap-1
+      className={`h-full max-h-full w-24 shrink-0 overflow-hidden rounded border p-2 cursor-pointer flex flex-col items-center gap-1
                   ${selected ? "border-accent bg-[#10211a]" : "border-line bg-panel2"}`}>
       <div className="text-xs font-semibold truncate w-full text-center">{track.name}</div>
       <div className="flex gap-1 text-[10px]">
@@ -14,7 +14,7 @@ function TrackStrip({ track, selected, onSelect, onChange }) {
       </div>
       <input type="range" min={0} max={1.5} step={0.01} value={track.gain ?? 1}
         onChange={(e) => onChange({ ...track, gain: parseFloat(e.target.value) })}
-        className="h-28" style={{ writingMode: "vertical-lr", direction: "rtl" }} />
+        className="h-20 w-4" style={{ writingMode: "vertical-lr", direction: "rtl" }} />
       <div className="text-[10px] text-dim font-mono">{((track.gain ?? 1) * 100).toFixed(0)}</div>
       <input type="range" min={-1} max={1} step={0.01} value={track.pan ?? 0}
         onChange={(e) => onChange({ ...track, pan: parseFloat(e.target.value) })}
@@ -26,13 +26,13 @@ function TrackStrip({ track, selected, onSelect, onChange }) {
 
 export default function Mixer({ tracks, selectedId, onSelect, onTrackChange, onAddTrack }) {
   return (
-    <div className="flex gap-2 p-3 bg-panel border-t border-line overflow-x-auto">
+    <div className="flex min-h-0 items-center gap-2 overflow-x-auto overflow-y-hidden border-t border-line bg-panel px-3 py-2">
       {tracks.map((t) => (
         <TrackStrip key={t.id} track={t} selected={t.id === selectedId}
           onSelect={() => onSelect(t.id)} onChange={(n) => onTrackChange(n)} />
       ))}
       <button onClick={onAddTrack}
-        className="w-24 shrink-0 rounded border border-dashed border-line text-dim text-2xl hover:border-accent hover:text-accent">
+        className="h-full max-h-full w-24 shrink-0 rounded border border-dashed border-line text-dim text-2xl hover:border-accent hover:text-accent">
         +
       </button>
     </div>

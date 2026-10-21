@@ -8,13 +8,13 @@ export default function Transport({ state, onPlay, onStop, onRecord, onRewind, o
   const ms = String(Math.floor((t - Math.floor(t)) * 1000)).padStart(3, "0");
 
   return (
-    <div className="flex items-center gap-4 px-4 py-2 bg-panel border-b border-line flex-wrap">
+    <div className="flex shrink-0 items-center gap-3 px-4 py-2 bg-panel border-b border-line flex-wrap">
       <div className="font-mono text-accent text-xl min-w-[140px]">{mm}:{ss}.{ms}</div>
       <div className="flex gap-1">
-        <button onClick={onRewind}  className="btn-ic">⏮</button>
-        <button onClick={playing ? onStop : onPlay} className="btn-ic">{playing ? "❚❚" : "▶"}</button>
-        <button onClick={onStop} className="btn-ic">■</button>
-        <button onClick={onRecord} className={`btn-ic text-rec ${recording ? "bg-rec text-white animate-pulse" : ""}`}>●</button>
+        <button onClick={onRewind} className="w-9 h-8 grid place-items-center rounded border border-line bg-panel2 hover:bg-[#16202e]">⏮</button>
+        <button onClick={playing ? onStop : onPlay} className="w-9 h-8 grid place-items-center rounded border border-line bg-panel2 hover:bg-[#16202e]">{playing ? "❚❚" : "▶"}</button>
+        <button onClick={onStop} className="w-9 h-8 grid place-items-center rounded border border-line bg-panel2 hover:bg-[#16202e]">■</button>
+        <button onClick={onRecord} className={`w-9 h-8 grid place-items-center rounded border border-line bg-panel2 text-rec hover:bg-[#16202e] ${recording ? "bg-rec text-white animate-pulse" : ""}`}>●</button>
       </div>
       <button onClick={onMetro} className={`px-2 py-1 rounded border border-line text-xs ${metro ? "bg-[#14342a] border-[#2f8f6b] text-accent" : ""}`}>
         Metronome
@@ -32,10 +32,6 @@ export default function Transport({ state, onPlay, onStop, onRecord, onRewind, o
       <button onClick={onConnect} className={`text-xs px-3 py-1 rounded border ${connected ? "border-accent text-accent" : "border-line"}`}>
         {connected ? "● Connected" : "Connect Input"}
       </button>
-
-      <style>{`
-        .btn-ic{ @apply w-9 h-8 grid place-items-center rounded border border-line bg-panel2 hover:bg-[#16202e]; }
-      `}</style>
     </div>
   );
 }
