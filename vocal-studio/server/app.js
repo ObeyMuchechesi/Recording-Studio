@@ -13,6 +13,10 @@ if (process.env.CLIENT_ORIGIN) {
 
 app.use(express.json({ limit: "80mb" }));
 
+// Vercel serves files from public/ by their filename, while the Express
+// function handles the site root. Send browsers to the generated SPA entry.
+app.get("/", (_req, res) => res.redirect(302, "/index.html"));
+
 app.get("/api/health", (_, res) => res.json({ ok: true }));
 
 app.use("/api", asyncHandler(async (_req, _res, next) => {
