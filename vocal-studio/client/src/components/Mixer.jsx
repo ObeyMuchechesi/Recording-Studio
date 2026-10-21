@@ -246,7 +246,7 @@ function TrackStrip({ track, selected, armed, onSelect, onArm, onChange, onManag
   );
 }
 
-export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, onTrackChange, onAddTrack, onDeleteTake, recording }) {
+export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, onTrackChange, onAddTrack, onDeleteTake, onAddCompRegion, onDeleteRegion, recording }) {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [vocalName, setVocalName] = useState("");
   const [managingTrackId, setManagingTrackId] = useState(null);
