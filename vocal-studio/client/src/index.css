@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { @apply bg-bg text-ink font-sans overflow-hidden; }
+
+.fader { -webkit-appearance: slider-vertical; appearance: slider-vertical; width: 8px; }
+input[type=range] { accent-color: #5fd4a0; }
+input[type=number], input[type=text], input[type=password], select {
+  @apply bg-panel2 border border-line rounded px-2 py-1 text-ink outline-none focus:border-accent;
+}
