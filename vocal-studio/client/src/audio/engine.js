@@ -51,6 +51,7 @@ export class StudioEngine {
     this.mic = null;
     this.inputGain = null;
     this.monitorGain = null;
+    this.monitoringMode = "hardware";
     this.recNode = null;
     this.recSink = null;
     this.recording = false;
@@ -88,7 +89,7 @@ export class StudioEngine {
     URL.revokeObjectURL(url);
   }
 
-  async connect(deviceId) {
+  async connect(deviceId, monitoringMode = this.monitoringMode) {
     await this.init();
     if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
     for (const node of [this.mic, this.inputGain, this.analyser, this.recNode, this.recSink, this.monitorGain]) {
@@ -132,15 +133,19 @@ export class StudioEngine {
     this.inputGain.connect(this.analyser);
     this.inputGain.connect(this.recNode);
     this.inputGain.connect(this.monitorGain);
-    this.monitorGain.connect(this.master.input);
+    this.setMonitoringMode(monitoringMode);
     this.recNode.connect(this.recSink).connect(this.ctx.destination);
   }
 
   setInputGain(db) { if (this.inputGain) this.inputGain.gain.value = Math.pow(10, db / 20); }
 
-  setMonitorEnabled(enabled) {
+  setMonitoringMode(mode) {
+    if (!["hardware", "software", "off"].includes(mode)) return false;
+    this.monitoringMode = mode;
     if (!this.monitorGain) return false;
-    this.monitorGain.gain.setTargetAtTime(enabled ? 1 : 0, this.ctx.currentTime, 0.015);
+    try { this.monitorGain.disconnect(); } catch {}
+    if (mode === "software") this.monitorGain.connect(this.master.input);
+    this.monitorGain.gain.setTargetAtTime(mode === "software" ? 1 : 0, this.ctx.currentTime, 0.015);
     return true;
   }
 
@@ -226,28 +231,48 @@ export class StudioEngine {
   }
 
   /* ---------- playback ---------- */
-  playTakes(tracks, fromPos) {
+  playRegions(tracks, fromPos) {
     this.stopPlay();
     const ctx = this.ctx;
     const t0 = ctx.currentTime + 0.06;
     for (const track of tracks) {
       const strip = this.getOrCreateStrip(track);
-      for (const take of track.takes || []) {
-        if (!take.data?.length || !Number.isFinite(take.sampleRate) || take.sampleRate <= 0) continue;
-        const duration = take.duration ?? take.data.length / take.sampleRate;
-        const end = take.offset + duration;
+      const takes = new Map((track.takes || []).map((take) => [String(take.id), take]));
+      for (const region of track.regions || []) {
+        const take = takes.get(String(region.takeId));
+        if (!take?.data?.length || !Number.isFinite(take.sampleRate) || take.sampleRate <= 0) continue;
+        const sourceStart = Math.max(0, Number(region.sourceStart) || 0);
+        const takeDuration = take.duration ?? take.data.length / take.sampleRate;
+        const requestedEnd = Number(region.sourceEnd);
+        const sourceEnd = Math.min(takeDuration, Number.isFinite(requestedEnd) ? requestedEnd : takeDuration);
+        const duration = sourceEnd - sourceStart;
+        if (!(duration > 0)) continue;
+        const timelineStart = Math.max(0, Number(region.timelineStart) || 0);
+        const end = timelineStart + duration;
         if (end <= fromPos) continue;
         const buf = ctx.createBuffer(1, take.data.length, take.sampleRate);
         buf.copyToChannel(take.data, 0);
         const src = ctx.createBufferSource();
         src.buffer = buf;
         const gain = ctx.createGain();
-        gain.gain.value = take.gain ?? 1;
-        if (take.mute) gain.gain.value = 0;
+        const elapsed = Math.max(0, fromPos - timelineStart);
+        const fadeIn = Math.min(duration / 2, Math.max(0, Number(region.fadeIn) || 0));
+        const fadeOut = Math.min(duration / 2, Math.max(0, Number(region.fadeOut) || 0));
+        const fadeInLevel = fadeIn > 0 ? Math.min(1, elapsed / fadeIn) : 1;
+        const fadeOutLevel = fadeOut > 0 ? Math.min(1, (duration - elapsed) / fadeOut) : 1;
+        const regionGain = (region.gain ?? 1) * (take.gain ?? 1) * (take.mute ? 0 : 1);
+        const when = t0 + Math.max(0, timelineStart - fromPos);
+        gain.gain.setValueAtTime(regionGain * fadeInLevel * fadeOutLevel, when);
+        if (fadeIn > elapsed) gain.gain.linearRampToValueAtTime(regionGain, when + fadeIn - elapsed);
+        const fadeOutAt = duration - fadeOut - elapsed;
+        if (fadeOut > 0 && fadeOutAt >= 0) {
+          gain.gain.setValueAtTime(regionGain, when + fadeOutAt);
+          gain.gain.linearRampToValueAtTime(0, when + duration - elapsed);
+        } else if (fadeOut > 0 && fadeOutLevel > 0) {
+          gain.gain.linearRampToValueAtTime(0, when + duration - elapsed);
+        }
         src.connect(gain).connect(strip.input);
-        const delay = Math.max(0, take.offset - fromPos);
-        const inBuf = Math.max(0, fromPos - take.offset);
-        src.start(t0 + delay, inBuf);
+        src.start(when, sourceStart + elapsed, duration - elapsed);
         this.sources.push(src);
       }
     }

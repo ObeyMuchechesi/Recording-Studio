@@ -17,6 +17,7 @@ const FxSchema = new mongoose.Schema({
 }, { _id: false });
 
 const TakeSchema = new mongoose.Schema({
+  takeKey:    String,
   name:       String,
   offset:     Number,   // seconds into session
   sampleRate: Number,
@@ -24,6 +25,17 @@ const TakeSchema = new mongoose.Schema({
   mute:       Boolean,
   // 24-bit WAV data, base64. In production use S3/GridFS — Mongo docs cap at 16MB.
   wavBase64:  { type: String, required: true },
+}, { timestamps: true });
+
+const RegionSchema = new mongoose.Schema({
+  regionKey:     String,
+  takeId:        { type: String, required: true },
+  sourceStart:   { type: Number, required: true, min: 0 },
+  sourceEnd:     { type: Number, required: true, min: 0 },
+  timelineStart: { type: Number, required: true, min: 0 },
+  fadeIn:        { type: Number, default: 0, min: 0 },
+  fadeOut:       { type: Number, default: 0, min: 0 },
+  gain:          { type: Number, default: 1, min: 0 },
 }, { timestamps: true });
 
 const TrackSchema = new mongoose.Schema({
@@ -35,6 +47,8 @@ const TrackSchema = new mongoose.Schema({
   solo:    Boolean,
   fx:      FxSchema,
   takes:   [TakeSchema],
+  regionsInitialized: { type: Boolean, default: false },
+  regions: [RegionSchema],
 }, { _id: true });
 
 const MasterFxSchema = new mongoose.Schema({

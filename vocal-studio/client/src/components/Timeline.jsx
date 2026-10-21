@@ -58,7 +58,7 @@ export default function Timeline({ tracks, playhead, onSeek }) {
         ctx.fillText(track.name || `Vocal ${i + 1}`, 12, y + 14, labelWidth - 22);
         ctx.fillStyle = "#718198";
         ctx.font = "10px ui-monospace, monospace";
-        ctx.fillText(`${(track.takes || []).length} ${(track.takes || []).length === 1 ? "take" : "takes"}`, 12, y + 31, labelWidth - 22);
+        ctx.fillText(`${(track.takes || []).length} takes · ${(track.regions || []).length} comp`, 12, y + 31, labelWidth - 22);
         for (const take of track.takes || []) {
           if (!take.peaks) continue;
           const x1 = labelWidth + (take.offset - scroll) * ppsec;
@@ -80,6 +80,47 @@ export default function Timeline({ tracks, playhead, onSeek }) {
             let b0 = Math.floor((tA - take.offset) * take.sampleRate / 64);
             let b1 = Math.max(b0 + 1, Math.ceil((tB - take.offset) * take.sampleRate / 64));
             if (b0 < 0) b0 = 0; if (b1 > nb) b1 = nb;
+            let mn = 1, mx = -1;
+            for (let b = b0; b < b1; b++) {
+              if (peaks[b * 2] < mn) mn = peaks[b * 2];
+              if (peaks[b * 2 + 1] > mx) mx = peaks[b * 2 + 1];
+            }
+            if (mx < mn) continue;
+            const amp = (laneHh / 2) * 0.88;
+            ctx.moveTo(px + 0.5, cy - mx * amp);
+            ctx.lineTo(px + 0.5, cy - mn * amp);
+          }
+          ctx.stroke();
+        }
+        for (const region of track.regions || []) {
+          const take = (track.takes || []).find((item) => String(item.id) === String(region.takeId));
+          if (!take?.peaks) continue;
+          const sourceStart = Math.max(0, region.sourceStart || 0);
+          const sourceEnd = Math.min(take.duration || take.data?.length / take.sampleRate || 0, region.sourceEnd || 0);
+          const regionDuration = sourceEnd - sourceStart;
+          if (!(regionDuration > 0)) continue;
+          const x1 = labelWidth + (region.timelineStart - scroll) * ppsec;
+          const x2 = x1 + regionDuration * ppsec;
+          if (x2 < labelWidth || x1 > w) continue;
+          const bx = Math.max(x1, labelWidth);
+          const bw = Math.min(x2, w) - bx;
+          if (bw <= 0) continue;
+          ctx.fillStyle = "rgba(45, 177, 125, 0.22)";
+          ctx.fillRect(bx, y, bw, laneHh);
+          ctx.strokeStyle = "#5fd4a0";
+          ctx.strokeRect(bx + 0.5, y + 0.5, Math.max(0, bw - 1), Math.max(0, laneHh - 1));
+
+          const peaks = take.peaks;
+          const peakCount = peaks.length / 2;
+          ctx.strokeStyle = "#8affc4";
+          ctx.beginPath();
+          for (let px = Math.max(labelWidth, Math.floor(x1)); px < Math.min(w, Math.ceil(x2)); px++) {
+            const timeA = scroll + (px - labelWidth) / ppsec;
+            const timeB = scroll + (px + 1 - labelWidth) / ppsec;
+            const srcA = sourceStart + (timeA - region.timelineStart);
+            const srcB = sourceStart + (timeB - region.timelineStart);
+            let b0 = Math.max(0, Math.floor(srcA * take.sampleRate / 64));
+            let b1 = Math.min(peakCount, Math.max(b0 + 1, Math.ceil(srcB * take.sampleRate / 64)));
             let mn = 1, mx = -1;
             for (let b = b0; b < b1; b++) {
               if (peaks[b * 2] < mn) mn = peaks[b * 2];

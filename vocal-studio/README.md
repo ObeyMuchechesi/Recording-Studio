@@ -26,7 +26,9 @@ A browser-based multitrack vocal recording, mixing, and mastering studio.
        npm install
        npm run dev
 
-5. Open http://localhost:5173 and register. Each project starts with a vocal track. Use **+ Add Vocal** to create a named track for each singer or part (for example, “Maya — Alto” or “Jon — Bass”). Select an audio input, connect it, choose the track’s **Arm** button, then record that singer’s takes. Tracks stay aligned in the shared project timeline, and the mixer lets you balance each singer independently. Calibrate latency, set the tempo and count-in, then use the master controls to shape and export a 24-bit WAV mixdown.
+5. Open http://localhost:5173 and register. Each project starts with a vocal track. Use **+ Add Vocal** to create a named track for each singer or part (for example, “Maya — Alto” or “Jon — Bass”). Select an audio input, connect it, choose the track’s **Arm** button, then record that singer’s takes. In **Manage Takes**, drag across a take waveform to select a phrase, then add it to the comp lane. Phrase edits leave source takes intact; use Undo/Redo or Ctrl/⌘ Z to step through edits. Tracks stay aligned in the shared project timeline, and the mixer lets you balance each singer independently. Calibrate latency, set the tempo and count-in, then use the master controls to shape and export a 24-bit WAV mixdown.
+
+Choose **Hardware direct** monitoring when your audio interface has a direct-monitor control; enable direct monitoring on the interface itself. This app mode bypasses its software monitor path. **Software** monitoring routes the dry microphone signal through the browser and can add latency, so use headphones. The browser reports its output base latency when available but does not expose a reliable buffer-size control.
 
 ## Deploy to Vercel
 
@@ -40,7 +42,8 @@ The Vercel app serves the built client and Express API on the same domain. Confi
 ## Features
 
 - Named vocal tracks for separate singers/parts, each with its own record arm and takes in one shared project; unwanted takes can be removed individually
-- Per-track rename, input-device selection, live input metering, optional headphone monitoring, and autosaved project settings/mix
+- Per-track rename, input-device selection, live input metering, hardware-direct or software monitoring modes, and autosaved project settings/mix
+- Non-destructive phrase comping with source takes, short region fades, and 50-step Undo/Redo history
 - Timeline playback, latency calibration, count-in, and metronome
 - Per-track gate, high-pass filter, de-esser, EQ, compressor, saturation, and reverb send
 - Mixer controls for level, pan, mute, and solo

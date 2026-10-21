@@ -36,7 +36,7 @@ function InputMeter({ analyser }) {
   );
 }
 
-export default function Transport({ state, onPlay, onStop, onRecord, onRewind, onBpm, onCountIn, onMetro, onCalibrate, onConnect, onMonitor, connected, monitoring, analyser, inputDevices, inputDeviceId, onInputDeviceChange }) {
+export default function Transport({ state, onPlay, onStop, onRecord, onRewind, onBpm, onCountIn, onMetro, onCalibrate, onConnect, onMonitoringModeChange, connected, monitoringMode, analyser, inputDevices, inputDeviceId, onInputDeviceChange, browserLatencyMs }) {
   const { playhead, playing, recording, bpm, countIn, metro, recordTarget } = state;
   const t = playhead || 0;
   const mm = String(Math.floor(t / 60)).padStart(2, "0");
@@ -72,10 +72,20 @@ export default function Transport({ state, onPlay, onStop, onRecord, onRewind, o
       <button onClick={onCalibrate} className="text-xs px-2 py-1 rounded border border-line">Calibrate</button>
       <div className="hidden md:block"><InputMeter analyser={analyser} /></div>
       <div className="flex-1" />
-      <button onClick={onMonitor} disabled={!connected} title="Use headphones to prevent feedback"
-        className={`text-xs px-2 py-1 rounded border disabled:opacity-40 ${monitoring ? "border-warn text-warn" : "border-line"}`}>
-        {monitoring ? "Monitor on · headphones" : "Monitor (headphones)"}
-      </button>
+      <label className="flex items-center gap-1 text-[10px] text-dim" title="Hardware direct monitoring is controlled by your audio interface, not the browser.">
+        Monitor
+        <select value={monitoringMode} onChange={(e) => onMonitoringModeChange(e.target.value)} className="max-w-44 text-xs">
+          <option value="hardware">Hardware direct</option>
+          <option value="software">Software · headphones</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      {monitoringMode === "hardware" ? (
+        <span className="hidden max-w-52 text-[10px] text-accent lg:block">Enable direct monitoring on your interface.</span>
+      ) : monitoringMode === "software" ? (
+        <span className="hidden max-w-52 text-[10px] text-warn lg:block">Dry browser monitoring adds latency; use headphones.</span>
+      ) : null}
+      {browserLatencyMs > 0 && <span className="hidden font-mono text-[10px] text-dim xl:block">Output base ≈ {browserLatencyMs.toFixed(1)} ms</span>}
       <label className="flex items-center gap-1 text-[10px] text-dim">
         Input
         <select value={inputDeviceId} onChange={(e) => onInputDeviceChange(e.target.value)} className="max-w-40 text-xs">

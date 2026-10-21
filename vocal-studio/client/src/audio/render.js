@@ -20,16 +20,32 @@ export async function renderMixdown({ tracks, masterFx, sampleRate, lengthSec })
     strip.setPan(track.pan ?? 0);
     strip.setSend(track.fx?.reverb?.on ? track.fx.reverb.mix : 0);
 
-    for (const take of track.takes || []) {
-      if (!take.data) continue;
+    const takes = new Map((track.takes || []).map((take) => [String(take.id), take]));
+    for (const region of track.regions || []) {
+      const take = takes.get(String(region.takeId));
+      if (!take?.data) continue;
+      const sourceStart = Math.max(0, Number(region.sourceStart) || 0);
+      const sourceEnd = Math.min(take.duration ?? take.data.length / take.sampleRate,
+        Number.isFinite(Number(region.sourceEnd)) ? Number(region.sourceEnd) : take.duration ?? take.data.length / take.sampleRate);
+      const duration = sourceEnd - sourceStart;
+      if (!(duration > 0)) continue;
+      const timelineStart = Math.max(0, Number(region.timelineStart) || 0);
       const buf = ctx.createBuffer(1, take.data.length, take.sampleRate);
       buf.copyToChannel(take.data, 0);
       const src = ctx.createBufferSource();
       src.buffer = buf;
       const g = ctx.createGain();
-      g.gain.value = (take.gain ?? 1) * (take.mute ? 0 : 1);
+      const regionGain = (region.gain ?? 1) * (take.gain ?? 1) * (take.mute ? 0 : 1);
+      const fadeIn = Math.min(Math.max(0, Number(region.fadeIn) || 0), duration / 2);
+      const fadeOut = Math.min(Math.max(0, Number(region.fadeOut) || 0), duration / 2);
+      g.gain.setValueAtTime(fadeIn > 0 ? 0 : regionGain, timelineStart);
+      if (fadeIn > 0) g.gain.linearRampToValueAtTime(regionGain, timelineStart + fadeIn);
+      if (fadeOut > 0) {
+        g.gain.setValueAtTime(regionGain, timelineStart + duration - fadeOut);
+        g.gain.linearRampToValueAtTime(0, timelineStart + duration);
+      }
       src.connect(g).connect(strip.input);
-      src.start(take.offset);
+      src.start(timelineStart, sourceStart, duration);
     }
   }
 

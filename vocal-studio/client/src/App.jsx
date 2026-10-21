@@ -47,13 +47,74 @@ function makeTake(offset, data, sampleRate, name) {
            duration: data.length / sampleRate };
 }
 
+function makeCompRegion(take, sourceStart = 0, sourceEnd = take.duration, timelineStart = take.offset + sourceStart) {
+  const id = globalThis.crypto?.randomUUID?.() || `region-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const phraseLength = Math.max(0, sourceEnd - sourceStart);
+  const edgeFade = Math.min(0.008, phraseLength / 4);
+  return {
+    id, takeId: String(take.id), sourceStart, sourceEnd, timelineStart,
+    fadeIn: edgeFade, fadeOut: edgeFade, gain: 1,
+  };
+}
+
+function replaceRegionRange(regions, inserted) {
+  const cutStart = inserted.timelineStart;
+  const cutEnd = cutStart + inserted.sourceEnd - inserted.sourceStart;
+  const result = [];
+  for (const region of regions || []) {
+    const duration = region.sourceEnd - region.sourceStart;
+    const start = region.timelineStart;
+    const end = start + duration;
+    if (end <= cutStart || start >= cutEnd) {
+      result.push(region);
+      continue;
+    }
+    if (start < cutStart) {
+      const leftDuration = cutStart - start;
+      result.push({ ...region, sourceEnd: region.sourceStart + leftDuration, fadeOut: Math.min(0.008, leftDuration / 4) });
+    }
+    if (end > cutEnd) {
+      const rightSourceStart = region.sourceStart + (cutEnd - start);
+      const rightDuration = end - cutEnd;
+      result.push({
+        ...region,
+        id: globalThis.crypto?.randomUUID?.() || `region-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        sourceStart: rightSourceStart,
+        timelineStart: cutEnd,
+        fadeIn: Math.min(0.008, rightDuration / 4),
+      });
+    }
+  }
+  result.push(inserted);
+  return result.sort((a, b) => a.timelineStart - b.timelineStart);
+}
+
+function sessionLengthSeconds(session) {
+  return (session?.tracks || []).reduce((maxLength, track) => {
+    const trackEnd = (track.regions || []).reduce((end, region) => {
+      const start = Number(region.timelineStart);
+      const span = Number(region.sourceEnd) - Number(region.sourceStart);
+      return Number.isFinite(start) && Number.isFinite(span) && span > 0 ? Math.max(end, start + span) : end;
+    }, 0);
+    return Math.max(maxLength, trackEnd);
+  }, 0);
+}
+
 function serializeTrack(track) {
   return {
     name: track.name,
     color: track.color,
     gain: track.gain, pan: track.pan, mute: track.mute, solo: track.solo,
     fx: track.fx,
+    regionsInitialized: true,
+    regions: (track.regions || []).map((region) => ({
+      regionKey: String(region.id), takeId: String(region.takeId),
+      sourceStart: region.sourceStart, sourceEnd: region.sourceEnd,
+      timelineStart: region.timelineStart, fadeIn: region.fadeIn, fadeOut: region.fadeOut,
+      gain: region.gain,
+    })),
     takes: (track.takes || []).map((take) => ({
+      takeKey: String(take.id),
       name: take.name, offset: take.offset, sampleRate: take.sampleRate,
       gain: take.gain, mute: take.mute, wavBase64: take.wavBase64,
     })),
@@ -73,7 +134,7 @@ export default function App() {
   const [armedTrackId, setArmedTrackId] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [monitoring, setMonitoring] = useState(false);
+  const [monitoringMode, setMonitoringMode] = useState("hardware");
   const [saveState, setSaveState] = useState("saved");
   const [playhead, setPlayhead] = useState(0);
   const [lufs, setLufs] = useState({ momentary: -Infinity, shortTerm: -Infinity });
@@ -83,12 +144,99 @@ export default function App() {
   const [latencyMs, setLatencyMs] = useState(0);
 
   const rafRef = useRef(0);
+  const sessionRef = useRef(null);
+  const historyRef = useRef({ past: [], future: [], pendingBase: null, pendingKey: null, timer: null });
+  const [historyRevision, setHistoryRevision] = useState(0);
   const skipAutoSaveRef = useRef(false);
   const saveRevisionRef = useRef(0);
   const recStartPosRef = useRef(0);
   const recRecordStartAtRef = useRef(0);
   const recCountInSecRef = useRef(0);
   const recTrackIdRef = useRef(null);
+
+  const commitPendingEdit = () => {
+    const history = historyRef.current;
+    if (history.timer) window.clearTimeout(history.timer);
+    history.timer = null;
+    if (history.pendingBase) {
+      history.past.push(history.pendingBase);
+      if (history.past.length > 50) history.past.shift();
+      history.pendingBase = null;
+      history.pendingKey = null;
+      setHistoryRevision((value) => value + 1);
+    }
+  };
+
+  const replaceSession = (next) => {
+    const history = historyRef.current;
+    if (history.timer) window.clearTimeout(history.timer);
+    history.past = [];
+    history.future = [];
+    history.pendingBase = null;
+    history.pendingKey = null;
+    history.timer = null;
+    sessionRef.current = next;
+    skipAutoSaveRef.current = true;
+    setSession(next);
+    setHistoryRevision((value) => value + 1);
+  };
+
+  const editSession = (update, key = "edit") => {
+    const current = sessionRef.current;
+    if (!current) return;
+    const next = typeof update === "function" ? update(current) : update;
+    if (!next || next === current) return;
+    const history = historyRef.current;
+    if (history.pendingBase && history.pendingKey !== key) commitPendingEdit();
+    if (!history.pendingBase) {
+      history.pendingBase = current;
+      history.pendingKey = key;
+    }
+    history.future = [];
+    if (history.timer) window.clearTimeout(history.timer);
+    history.timer = window.setTimeout(commitPendingEdit, 450);
+    sessionRef.current = next;
+    setSession(next);
+    setHistoryRevision((value) => value + 1);
+  };
+
+  const applyHistorySession = (next) => {
+    sessionRef.current = next;
+    setSession(next);
+    setBpm(next.bpm || 100);
+    setHistoryRevision((value) => value + 1);
+  };
+
+  const undo = () => {
+    const history = historyRef.current;
+    if (history.timer) window.clearTimeout(history.timer);
+    history.timer = null;
+    if (history.pendingBase) {
+      const previous = history.pendingBase;
+      history.pendingBase = null;
+      history.pendingKey = null;
+      history.future.push(sessionRef.current);
+      applyHistorySession(previous);
+      return;
+    }
+    const previous = history.past.pop();
+    if (!previous) return;
+    history.future.push(sessionRef.current);
+    applyHistorySession(previous);
+  };
+
+  const redo = () => {
+    const history = historyRef.current;
+    if (!history.future.length) return;
+    const next = history.future.pop();
+    history.past.push(sessionRef.current);
+    if (history.past.length > 50) history.past.shift();
+    history.pendingBase = null;
+    history.pendingKey = null;
+    if (history.timer) window.clearTimeout(history.timer);
+    history.timer = null;
+    applyHistorySession(next);
+  };
 
   /* ---------- boot ---------- */
   useEffect(() => {
@@ -102,8 +250,7 @@ export default function App() {
         } else {
           const s = await api.createSession({ name: "New Session" });
           const norm = normalizeSession(s);
-          skipAutoSaveRef.current = true;
-          setSession(norm);
+          replaceSession(norm);
           setBpm(norm.bpm || 100);
           if (norm.tracks.length) {
             setSelectedTrack(norm.tracks[0].id);
@@ -119,14 +266,26 @@ export default function App() {
     ...raw,
     tracks: (raw.tracks || []).map((t, i) => ({
       ...t,
-      id: t._id || t.id || `t${i}`,
+      id: String(t._id || t.id || `t${i}`),
       color: t.color || ["#5fd4a0","#5fa8d4","#d4a05f","#d45fa8"][i % 4],
       fx: { ...DEFAULT_FX, ...(t.fx || {}) },
       takes: (t.takes || []).map((tk, j) => ({
         ...tk,
-        id: tk._id || `tk${j}`,
+        id: String(tk.takeKey || tk._id || tk.id || `tk${j}`),
         data: null, // hydrated async
         peaks: null,
+      })),
+      regionsInitialized: t.regionsInitialized === true || !(t.takes || []).length,
+      regions: (t.regions || []).map((region, j) => ({
+        ...region,
+        id: String(region.regionKey || region._id || region.id || `region${j}`),
+        takeId: String(region.takeId || ""),
+        sourceStart: Number(region.sourceStart) || 0,
+        sourceEnd: Number(region.sourceEnd) || 0,
+        timelineStart: Number(region.timelineStart) || 0,
+        fadeIn: Number(region.fadeIn) || 0,
+        fadeOut: Number(region.fadeOut) || 0,
+        gain: Number.isFinite(Number(region.gain)) ? Number(region.gain) : 1,
       })),
     })),
     masterFx: { ...DEFAULT_MASTER, ...(raw.masterFx || {}) },
@@ -155,9 +314,18 @@ export default function App() {
           take.duration = take.data.length / take.sampleRate;
         }
       }
+      if (!track.regionsInitialized && track.takes.length) {
+        track.regions = track.takes.map((take) => makeCompRegion(take, 0, take.duration, take.offset));
+        track.regionsInitialized = true;
+      }
+      track.regions = track.regions.map((region) => {
+        const take = track.takes.find((item) => item.id === String(region.takeId));
+        return take && !(region.sourceEnd > region.sourceStart)
+          ? { ...region, sourceEnd: take.duration }
+          : region;
+      });
     }
-    skipAutoSaveRef.current = true;
-    setSession(norm);
+    replaceSession(norm);
     setBpm(norm.bpm || 100);
     if (norm.tracks.length) {
       setSelectedTrack(norm.tracks[0].id);
@@ -207,8 +375,7 @@ export default function App() {
   const connect = async () => {
     if (recording) return alert("Stop the current take before changing the input");
     const e = await ensureEngine();
-    await e.connect(inputDeviceId || undefined);
-    e.setMonitorEnabled(monitoring);
+    await e.connect(inputDeviceId || undefined, monitoringMode);
     setConnected(true);
     const devices = await navigator.mediaDevices.enumerateDevices();
     const inputs = devices.filter((device) => device.kind === "audioinput");
@@ -217,11 +384,9 @@ export default function App() {
     if (activeId) setInputDeviceId(activeId);
   };
 
-  const toggleMonitor = () => {
-    if (!connected || !engineRef) return;
-    const next = !monitoring;
-    engineRef.setMonitorEnabled(next);
-    setMonitoring(next);
+  const changeMonitoringMode = (mode) => {
+    setMonitoringMode(mode);
+    engineRef?.setMonitoringMode(mode);
   };
 
   /* ---------- sync engine with session state ---------- */
@@ -244,7 +409,7 @@ export default function App() {
       if (engineRef?.playing) {
         const pos = engineRef.playStartPos + (engineRef.ctx.currentTime - engineRef.playStartCtx);
         setPlayhead(pos);
-        if (pos > (session?.tracks?.reduce((m, t) => Math.max(m, ...(t.takes || []).map((k) => k.offset + (k.duration || 0))), 0) ?? 0) + 0.4) {
+        if (pos > sessionLengthSeconds(session) + 0.4) {
           engineRef.stopPlay();
           setPlaying(false);
         }
@@ -262,7 +427,7 @@ export default function App() {
   const play = async () => {
     if (!session || playing) return;
     const e = await ensureEngine();
-    e.playTakes(session.tracks, playhead);
+    e.playRegions(session.tracks, playhead);
     setPlaying(true);
   };
   const stop = () => {
@@ -276,7 +441,7 @@ export default function App() {
   const changeBpm = (value) => {
     const next = Math.max(30, Math.min(300, value || 100));
     setBpm(next);
-    setSession((current) => current ? { ...current, bpm: next } : current);
+    editSession((current) => ({ ...current, bpm: next }), "bpm");
   };
 
   const startRecord = async () => {
@@ -320,9 +485,14 @@ export default function App() {
       setSaveState("error");
       alert("This take is playable for now, but its audio could not be prepared for saving: " + e.message);
     }
-    setSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === trackId
-      ? { ...track, takes: [...track.takes, savedTake] }
-      : track) }));
+    editSession((current) => ({ ...current, tracks: current.tracks.map((track) => {
+      if (track.id !== trackId) return track;
+      const takes = [...track.takes, savedTake];
+      const regions = track.regions?.length
+        ? track.regions
+        : [makeCompRegion(savedTake, 0, savedTake.duration, savedTake.offset)];
+      return { ...track, takes, regions, regionsInitialized: true };
+    }) }), `record-${trackId}`);
     setPlayhead(take.offset + take.duration);
   };
 
@@ -356,8 +526,7 @@ export default function App() {
 
   const exportMixdown = async () => {
     if (!session) return;
-    const lengthSec = session.tracks.reduce((m, t) =>
-      Math.max(m, ...(t.takes || []).map((k) => k.offset + (k.duration || 0))), 0) + 1;
+    const lengthSec = sessionLengthSeconds(session) + 1;
     if (lengthSec <= 1) return alert("Nothing to export");
     const blob = await renderMixdown({
       tracks: session.tracks,
@@ -369,21 +538,58 @@ export default function App() {
   };
 
   const changeTrack = (updated) => {
-    setSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === updated.id ? updated : track) }));
+    editSession((current) => ({ ...current, tracks: current.tracks.map((track) => track.id === updated.id ? updated : track) }), `track-${updated.id}`);
+  };
+
+  const stopPlaybackForEdit = () => {
+    if (!playing) return;
+    engineRef?.stopPlay();
+    setPlaying(false);
   };
 
   const deleteTake = (trackId, takeId) => {
     if (recording) return alert("Stop recording before deleting a take");
-    if (playing) {
-      engineRef?.stopPlay();
-      setPlaying(false);
-    }
-    setSession((current) => current ? ({
+    stopPlaybackForEdit();
+    editSession((current) => ({
       ...current,
       tracks: current.tracks.map((track) => track.id === trackId
-        ? { ...track, takes: track.takes.filter((take) => take.id !== takeId) }
+        ? {
+            ...track,
+            takes: track.takes.filter((take) => take.id !== takeId),
+            regions: (track.regions || []).filter((region) => String(region.takeId) !== String(takeId)),
+          }
         : track),
-    }) : current);
+    }), `delete-take-${trackId}`);
+  };
+
+  const addCompRegion = (trackId, takeId, sourceStart, sourceEnd, timelineStart) => {
+    if (recording) return alert("Stop recording before editing the comp");
+    const track = sessionRef.current?.tracks.find((item) => item.id === trackId);
+    const take = track?.takes.find((item) => item.id === takeId);
+    const duration = take?.duration ?? (take?.data?.length || 0) / (take?.sampleRate || 1);
+    const start = Math.max(0, Math.min(duration, Number(sourceStart) || 0));
+    const end = Math.max(0, Math.min(duration, Number(sourceEnd) || 0));
+    const at = Math.max(0, Number(timelineStart) || 0);
+    if (!take || end <= start) return alert("Choose a valid phrase range from this take");
+    stopPlaybackForEdit();
+    const inserted = makeCompRegion(take, start, end, at);
+    editSession((current) => ({
+      ...current,
+      tracks: current.tracks.map((item) => item.id === trackId
+        ? { ...item, regions: replaceRegionRange(item.regions, inserted), regionsInitialized: true }
+        : item),
+    }), `comp-${trackId}`);
+  };
+
+  const deleteCompRegion = (trackId, regionId) => {
+    if (recording) return alert("Stop recording before editing the comp");
+    stopPlaybackForEdit();
+    editSession((current) => ({
+      ...current,
+      tracks: current.tracks.map((track) => track.id === trackId
+        ? { ...track, regions: track.regions.filter((region) => region.id !== regionId) }
+        : track),
+    }), `comp-${trackId}`);
   };
 
   const addTrack = (name) => {
@@ -392,9 +598,9 @@ export default function App() {
     const colors = ["#5fd4a0", "#63a9ef", "#e3aa5b", "#d47be0", "#f07878", "#73c6c0"];
     const track = {
       id, name: name || `Vocal ${index + 1}`, color: colors[index % colors.length],
-      gain: 1, pan: 0, mute: false, solo: false, fx: { ...DEFAULT_FX }, takes: [],
+      gain: 1, pan: 0, mute: false, solo: false, fx: { ...DEFAULT_FX }, takes: [], regions: [], regionsInitialized: true,
     };
-    setSession((current) => ({ ...current, tracks: [...current.tracks, track] }));
+    editSession((current) => ({ ...current, tracks: [...current.tracks, track] }), "add-track");
     setSelectedTrack(id);
     setArmedTrackId(id);
   };
@@ -403,6 +609,11 @@ export default function App() {
   useEffect(() => {
     const onKey = (e) => {
       if (e.target.matches("input, select, textarea")) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
       if (e.code === "Space") { e.preventDefault(); playing ? stop() : play(); }
       if (e.key === "r" || e.key === "R") startRecord();
       if (e.key === "Escape") stop();
@@ -419,7 +630,12 @@ export default function App() {
 
   const selected = session.tracks.find((t) => t.id === selectedTrack);
   const armedTrack = session.tracks.find((t) => t.id === armedTrackId);
-  const retrySave = () => setSession((current) => current ? { ...current } : current);
+  const retrySave = () => {
+    const next = sessionRef.current ? { ...sessionRef.current } : null;
+    if (next) { sessionRef.current = next; setSession(next); }
+  };
+  const canUndo = historyRevision >= 0 && Boolean(historyRef.current.pendingBase || historyRef.current.past.length);
+  const canRedo = historyRevision >= 0 && Boolean(historyRef.current.future.length);
 
   return (
     <div className="studio-shell flex flex-col overflow-hidden">
@@ -427,8 +643,12 @@ export default function App() {
         <div className="font-bold tracking-widest text-accent text-sm">◆ VOCAL<span className="text-dim">STUDIO</span></div>
         <input className="flex-1 bg-panel2 border border-line rounded px-2 py-1 text-sm"
                value={session.name}
-               onChange={(e) => setSession({ ...session, name: e.target.value })}
+               onChange={(e) => editSession((current) => ({ ...current, name: e.target.value }), "project-name")}
                aria-label="Project name" />
+        <button onClick={undo} disabled={!canUndo} title="Undo · Ctrl/⌘ Z"
+          className="shrink-0 rounded border border-line px-2 py-1 text-[10px] text-dim enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-40">Undo</button>
+        <button onClick={redo} disabled={!canRedo} title="Redo · Ctrl/⌘ Shift Z"
+          className="shrink-0 rounded border border-line px-2 py-1 text-[10px] text-dim enabled:hover:border-accent enabled:hover:text-accent disabled:opacity-40">Redo</button>
         <button onClick={saveState === "error" ? retrySave : undefined} disabled={saveState === "saving"}
           aria-live="polite" title={saveState === "error" ? "Click to retry saving this project" : undefined}
           className={`shrink-0 text-[10px] ${saveState === "error" ? "text-rec" : saveState === "saving" ? "text-dim" : "text-accent"}`}>
@@ -447,8 +667,9 @@ export default function App() {
           const v = !metro; setMetro(v);
           if (engineRef) engineRef.setMetronome(v, bpm);
         }}
-        onCalibrate={calibrate} onConnect={connect} onMonitor={toggleMonitor}
-        connected={connected} monitoring={monitoring} analyser={engineRef?.analyser || null}
+        onCalibrate={calibrate} onConnect={connect} onMonitoringModeChange={changeMonitoringMode}
+        connected={connected} monitoringMode={monitoringMode} analyser={engineRef?.analyser || null}
+        browserLatencyMs={engineRef?.ctx?.baseLatency ? engineRef.ctx.baseLatency * 1000 : 0}
         inputDevices={inputDevices} inputDeviceId={inputDeviceId} onInputDeviceChange={setInputDeviceId}
       />
 
@@ -471,13 +692,15 @@ export default function App() {
           onTrackChange={changeTrack}
           onAddTrack={addTrack}
           onDeleteTake={deleteTake}
+          onAddCompRegion={addCompRegion}
+          onDeleteRegion={deleteCompRegion}
           recording={recording}
         />
 
         <MasterPanel
           settings={session.masterFx}
           lufs={lufs}
-          onChange={(m) => setSession({ ...session, masterFx: m })}
+          onChange={(m) => editSession((current) => ({ ...current, masterFx: m }), "master-fx")}
           onExport={exportMixdown}
         />
       </div>

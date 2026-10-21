@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 function formatTime(seconds = 0) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -8,42 +8,174 @@ function formatTime(seconds = 0) {
   return `${minutes}:${wholeSeconds}.${millis}`;
 }
 
-function TakeManager({ track, recording, onClose, onDelete }) {
+function TakeRangeWaveform({ take, duration, sourceIn, sourceOut, onRangeChange }) {
+  const waveformRef = useRef(null);
+  const dragStartRef = useRef(null);
+  const peaks = take.peaks;
+  const bars = useMemo(() => {
+    if (!peaks?.length) return [];
+    const peakCount = peaks.length / 2;
+    const count = Math.min(240, peakCount);
+    return Array.from({ length: count }, (_, index) => {
+      const first = Math.floor(index * peakCount / count);
+      const last = Math.max(first + 1, Math.floor((index + 1) * peakCount / count));
+      let min = 1, max = -1;
+      for (let bin = first; bin < last; bin++) {
+        min = Math.min(min, peaks[bin * 2]);
+        max = Math.max(max, peaks[bin * 2 + 1]);
+      }
+      return { x: (index + 0.5) * 1000 / count, min, max };
+    });
+  }, [peaks]);
+
+  const positionAt = (event) => {
+    const rect = waveformRef.current.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * duration;
+  };
+  const updateRange = (event) => {
+    if (dragStartRef.current === null) return;
+    const endAt = positionAt(event);
+    if (Math.abs(endAt - dragStartRef.current) < 0.008) return;
+    onRangeChange(Math.min(dragStartRef.current, endAt), Math.max(dragStartRef.current, endAt));
+  };
+
+  const left = duration > 0 ? Math.max(0, Math.min(100, (Number(sourceIn) / duration) * 100)) : 0;
+  const right = duration > 0 ? Math.max(left, Math.min(100, (Number(sourceOut) / duration) * 100)) : 0;
+  return (
+    <div ref={waveformRef} role="group" aria-label={`Waveform range selector for ${take.name || "take"}`}
+      onPointerDown={(event) => { waveformRef.current.setPointerCapture(event.pointerId); dragStartRef.current = positionAt(event); }}
+      onPointerMove={updateRange}
+      onPointerUp={(event) => { updateRange(event); dragStartRef.current = null; }}
+      onPointerCancel={() => { dragStartRef.current = null; }}
+      className="relative mt-2 h-12 touch-none cursor-crosshair overflow-hidden rounded border border-line bg-[#0a0e14]">
+      <svg aria-hidden="true" className="absolute inset-0 h-full w-full" viewBox="0 0 1000 64" preserveAspectRatio="none">
+        <g stroke="#65bda0" strokeWidth="2">
+          {bars.map((bar, index) => <line key={index} x1={bar.x} x2={bar.x} y1={32 - bar.max * 27} y2={32 - bar.min * 27} />)}
+        </g>
+      </svg>
+      <div aria-hidden="true" className="absolute inset-y-0 border-x border-accent bg-accent/20"
+        style={{ left: `${left}%`, width: `${Math.max(0, right - left)}%`, pointerEvents: "none" }} />
+      <span className="absolute bottom-0.5 left-1 text-[8px] text-dim">0:00</span>
+      <span className="absolute bottom-0.5 right-1 text-[8px] text-dim">{formatTime(duration)}</span>
+    </div>
+  );
+}
+
+function TakeRow({ track, take, index, regions, recording, onDelete, onAddCompRegion }) {
+  const duration = Math.max(0, Number(take.duration) || (take.data?.length || 0) / (take.sampleRate || 1));
+  const [sourceIn, setSourceIn] = useState("0.000");
+  const [sourceOut, setSourceOut] = useState(duration.toFixed(3));
+  const [timelineOverride, setTimelineOverride] = useState(null);
+  const timelineStart = timelineOverride === null
+    ? (Number(take.offset) || 0) + (Number(sourceIn) || 0)
+    : timelineOverride;
+
+  useEffect(() => {
+    setSourceIn("0.000");
+    setSourceOut(duration.toFixed(3));
+    setTimelineOverride(null);
+  }, [take.id, duration]);
+
+  const label = take.name || `Take ${index + 1}`;
+  const inComp = regions.some((region) => String(region.takeId) === String(take.id));
+
+  return (
+    <div className="rounded border border-line bg-panel2 px-3 py-2">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-medium text-ink">{label}{inComp && <span className="ml-2 text-[9px] font-semibold uppercase tracking-wider text-accent">In comp</span>}</div>
+          <div className="font-mono text-[10px] text-dim">Original position {formatTime(take.offset)} · {formatTime(duration)}</div>
+        </div>
+        <button type="button" disabled={recording}
+          onClick={() => { if (window.confirm(`Delete “${label}” and its comp regions from ${track.name}? You can undo this before leaving the project.`)) onDelete(track.id, take.id); }}
+          title={recording ? "Stop recording before deleting a take" : `Delete ${label}`}
+          className="shrink-0 rounded border border-rec/50 px-2 py-1 text-[10px] font-semibold text-rec hover:bg-[#34151b] disabled:cursor-not-allowed disabled:opacity-40">
+          Delete take
+        </button>
+      </div>
+      <TakeRangeWaveform take={take} duration={duration} sourceIn={sourceIn} sourceOut={sourceOut}
+        onRangeChange={(start, end) => { setSourceIn(start.toFixed(3)); setSourceOut(end.toFixed(3)); }} />
+      <div className="mt-1 text-[9px] text-dim">Drag across the waveform to select a phrase.</div>
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-[9px] text-dim">Phrase in (s)
+          <input type="number" min="0" max={duration} step="0.001" value={sourceIn}
+            onChange={(e) => setSourceIn(e.target.value)} disabled={recording} className="mt-0.5 block w-24 text-xs" />
+        </label>
+        <label className="text-[9px] text-dim">Phrase out (s)
+          <input type="number" min="0" max={duration} step="0.001" value={sourceOut}
+            onChange={(e) => setSourceOut(e.target.value)} disabled={recording} className="mt-0.5 block w-24 text-xs" />
+        </label>
+        <label className="text-[9px] text-dim">Comp start (s)
+          <input type="number" min="0" step="0.001" value={timelineStart}
+            onChange={(e) => setTimelineOverride(e.target.value === "" ? "" : Number(e.target.value))}
+            disabled={recording} className="mt-0.5 block w-24 text-xs" />
+        </label>
+        <button type="button" disabled={recording || !(duration > 0)}
+          onClick={() => onAddCompRegion(track.id, take.id, Number(sourceIn), Number(sourceOut), Number(timelineStart))}
+          title="Add this source phrase to the comp; overlapping comp audio will be split non-destructively"
+          className="rounded bg-accent px-2 py-1.5 text-[10px] font-semibold text-black disabled:cursor-not-allowed disabled:opacity-40">
+          Add phrase to comp
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TakeManager({ track, recording, onClose, onDelete, onAddCompRegion, onDeleteRegion }) {
   if (!track) return null;
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <section role="dialog" aria-modal="true" aria-labelledby="take-manager-title"
-        className="w-full max-w-lg rounded-xl border border-line bg-panel p-5 shadow-2xl">
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-panel p-5 shadow-2xl">
         <div className="mb-1 flex items-center justify-between gap-3">
-          <h2 id="take-manager-title" className="truncate text-sm font-semibold text-ink">Takes · {track.name}</h2>
+          <h2 id="take-manager-title" className="truncate text-sm font-semibold text-ink">Take comp · {track.name}</h2>
           <button type="button" onClick={onClose} aria-label="Close takes" className="rounded border border-line px-2 py-1 text-xs text-dim">Close</button>
         </div>
-        <p className="mb-4 text-xs text-dim">Remove an unwanted recording from this vocal track. The change will autosave with the project.</p>
+        <p className="mb-3 text-xs text-dim">Takes are original recordings. Add a phrase to build the comp; overlapping comp regions are split without changing the source audio. Edits autosave and can be undone.</p>
 
-        {track.takes.length ? (
-          <div className="max-h-72 space-y-2 overflow-y-auto">
-            {track.takes.map((take, index) => (
-              <div key={take.id} className="flex items-center gap-3 rounded border border-line bg-panel2 px-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium text-ink">{take.name || `Take ${index + 1}`}</div>
-                  <div className="font-mono text-[10px] text-dim">Start {formatTime(take.offset)} · Length {formatTime(take.duration)}</div>
-                </div>
-                <button type="button" disabled={recording}
-                  onClick={() => {
-                    const label = take.name || `Take ${index + 1}`;
-                    if (window.confirm(`Delete “${label}” from ${track.name}? This cannot be undone.`)) onDelete(track.id, take.id);
-                  }}
-                  title={recording ? "Stop recording before deleting a take" : `Delete ${take.name || `Take ${index + 1}`}`}
-                  className="shrink-0 rounded border border-rec/50 px-2 py-1 text-[10px] font-semibold text-rec hover:bg-[#34151b] disabled:cursor-not-allowed disabled:opacity-40">
-                  Delete
-                </button>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          <section>
+            <h3 className="mb-2 text-[10px] font-semibold tracking-widest text-dim">SOURCE TAKES · {track.takes.length}</h3>
+            {track.takes.length ? (
+              <div className="space-y-2">
+                {track.takes.map((take, index) => (
+                  <TakeRow key={take.id} track={track} take={take} index={index} regions={track.regions || []}
+                    recording={recording} onDelete={onDelete} onAddCompRegion={onAddCompRegion} />
+                ))}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded border border-dashed border-line px-3 py-6 text-center text-xs text-dim">No recordings on this track yet.</div>
-        )}
+            ) : (
+              <div className="rounded border border-dashed border-line px-3 py-6 text-center text-xs text-dim">No recordings on this track yet.</div>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-[10px] font-semibold tracking-widest text-dim">COMP LANE · {track.regions?.length || 0} REGIONS</h3>
+            {track.regions?.length ? (
+              <div className="space-y-1.5">
+                {track.regions.map((region, index) => {
+                  const source = track.takes.find((take) => String(take.id) === String(region.takeId));
+                  const regionEnd = region.timelineStart + region.sourceEnd - region.sourceStart;
+                  return (
+                    <div key={region.id} className="flex items-center gap-3 rounded border border-accent/30 bg-[#10211a] px-3 py-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium text-ink">{source?.name || "Missing source"} · Phrase {index + 1}</div>
+                        <div className="font-mono text-[10px] text-dim">Source {formatTime(region.sourceStart)}–{formatTime(region.sourceEnd)} · Timeline {formatTime(region.timelineStart)}–{formatTime(regionEnd)}</div>
+                      </div>
+                      <button type="button" disabled={recording}
+                        onClick={() => { if (window.confirm("Remove this phrase from the comp? The original take will remain.")) onDeleteRegion(track.id, region.id); }}
+                        className="shrink-0 rounded border border-line px-2 py-1 text-[10px] text-dim hover:border-rec hover:text-rec disabled:opacity-40">
+                        Remove phrase
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded border border-dashed border-line px-3 py-4 text-center text-xs text-dim">The comp lane is empty. Add a phrase from any source take above.</div>
+            )}
+          </section>
+        </div>
         {recording && <p className="mt-3 text-[10px] text-warn">Stop recording before removing a take.</p>}
       </section>
     </div>
@@ -176,7 +308,7 @@ export default function Mixer({ tracks, selectedId, armedId, onSelect, onArm, on
       )}
 
       <TakeManager track={managingTrack} recording={recording} onClose={() => setManagingTrackId(null)}
-        onDelete={onDeleteTake} />
+        onDelete={onDeleteTake} onAddCompRegion={onAddCompRegion} onDeleteRegion={onDeleteRegion} />
     </div>
   );
 }
